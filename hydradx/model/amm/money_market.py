@@ -30,6 +30,8 @@ class CDP:
             f"{newline.join([f'        {tkn}: {self.debt[tkn]}' for tkn in self.debt.keys()])}\n"
             f"    collateral:\n"
             f"{newline.join([f'        {tkn}: {self.collateral[tkn]}' for tkn in self.collateral.keys()])}\n"
+            f"    liquidation_threshold: {self.liquidation_threshold}\n"
+            f"    health_factor: {self.health_factor}\n"
         )
 
     def copy(self):
@@ -158,6 +160,8 @@ class MoneyMarket(Exchange):
             cdp.health_factor = self.get_health_factor(cdp)
         self.cdps.append(cdp)
         for tkn in cdp.debt:
+            if tkn not in self.borrowed:
+                self.borrowed[tkn] = 0
             self.borrowed[tkn] += cdp.debt[tkn]
         return self
 
@@ -189,7 +193,7 @@ class MoneyMarket(Exchange):
                 for d_tkn in cdp.debt
         ])
         if debt_total == 0:
-            return 0
+            return float('inf')
         health_factor = (
             sum([
                 cdp.collateral[c_tkn] * prices[c_tkn]
