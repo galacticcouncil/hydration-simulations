@@ -97,3 +97,28 @@ def one_line_markdown(text, align="left"):
         """,
         unsafe_allow_html=True
     )
+
+
+def sigmoid_list(start, length, steepness=1.0, midpoint=None):
+    """
+    Generate a list of values following a sigmoid curve, normalized to sum to 1.
+    """
+    if start > 1:
+        raise ValueError("Start must be <= 1 to guarantee sum=1")
+
+    if midpoint is None:
+        midpoint = 0.5
+    midpoint *= length
+
+    idx = np.arange(length)
+    # raw sigmoid shape, decreasing
+    raw = 1 / (1 + np.exp((idx - midpoint) / steepness))
+
+    # scale so that the first element = start
+    scale = start / raw[0]
+    shaped = raw * scale
+
+    # normalize so that sum = 1
+    shaped /= shaped.sum()
+
+    return shaped
