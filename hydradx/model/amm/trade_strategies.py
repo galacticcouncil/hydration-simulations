@@ -1081,8 +1081,11 @@ def general_arbitrage(exchanges: list[Exchange], equivalency_map: dict = None, c
 def liquidate_cdps(pool_id: str = None, iters: int = 16) -> TradeStrategy:
     def strategy(state: GlobalState, agent_id: str) -> GlobalState:
         agent = state.agents[agent_id]
-        pools: list[Exchange] = [state.pools[pool_id]] if pool_id else list(state.pools.values())
-        mms = list(filter(lambda p: isinstance(p, MoneyMarket), state.pools.values()))
+        pools: set[Exchange] = {state.pools[pool_id]} if pool_id else set(state.pools.values())
+        for pool in list(pools):
+            if hasattr(pool, 'exchanges'):
+                pools |= set(pool.exchanges.values())
+        mms = [pool for pool in pools if isinstance(pool, MoneyMarket)]
         for mm in mms:
             for cdp in mm.cdps:
                 potential_liquidations = True
