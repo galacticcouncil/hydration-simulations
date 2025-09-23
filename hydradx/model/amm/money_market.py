@@ -165,6 +165,11 @@ class MoneyMarket(Exchange):
             self.borrowed[tkn] += cdp.debt[tkn]
         return self
 
+    def add_cdps(self, cdps: list[CDP]):
+        for cdp in cdps:
+            self.add_cdp(cdp)
+        return self
+
     def fail_transaction(self, fail: str):
         self.fail = fail
         return self
