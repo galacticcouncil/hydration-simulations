@@ -51,7 +51,7 @@ print("App start")
 
 @st.cache_data(ttl=3600, show_spinner="Loading Omnipool data (cached for 1 hour)...")
 def load_omnipool_router() -> tuple[OmnipoolRouter, str]:
-    block_number = None  # 9090000
+    block_number = 9090000
     # Add timestamp to verify caching
     import datetime
     cache_time = datetime.datetime.now().strftime("%H:%M:%S")
