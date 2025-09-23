@@ -77,6 +77,21 @@ class MoneyMarketAsset:
         self.emode_label = emode_label
         self.supply_cap = supply_cap
 
+    def copy(self):
+        return MoneyMarketAsset(
+            name=self.name,
+            price=self.price,
+            liquidity=self.liquidity,
+            liquidation_bonus=self.liquidation_bonus,
+            liquidation_threshold=self.liquidation_threshold,
+            ltv=self.ltv,
+            emode_liquidation_bonus=self.emode_liquidation_bonus,
+            emode_liquidation_threshold=self.emode_liquidation_threshold,
+            emode_ltv=self.emode_ltv,
+            emode_label=self.emode_label,
+            supply_cap=self.supply_cap
+        )
+
 
 class MoneyMarket(Exchange):
     def __init__(
