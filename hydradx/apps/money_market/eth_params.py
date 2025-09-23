@@ -408,9 +408,8 @@ with st.sidebar:
             title = title or name
 
             def update_asset(name, attr, value):
-                asset = st.session_state["assets"][name]
-                asset.setattr(attr, value)
-                st.rerun()
+                asset = [asset for asset in st.session_state["assets"] if asset.name == name][0]
+                setattr(asset, attr, value)
 
             with st.container():
                 st.markdown(
@@ -444,7 +443,6 @@ with st.sidebar:
                 with input_col:
                     asset.liquidation_threshold = st.number_input(
                         label=f"liquidation threshold ({name})",
-                        min_value=0.0,
                         max_value=0.99,
                         value=asset.liquidation_threshold,
                         label_visibility="collapsed",
@@ -457,7 +455,6 @@ with st.sidebar:
                 with input_col:
                     asset.liquidation_bonus = st.number_input(
                         label=f"liquidation bonus ({name})",
-                        min_value=0.00,
                         max_value=0.2,
                         value=asset.liquidation_bonus,
                         label_visibility="collapsed",
@@ -482,7 +479,6 @@ with st.sidebar:
                     with input_col:
                         asset.emode_liquidation_threshold = st.number_input(
                             label=f"e-mode liquidation threshold ({name})",
-                            min_value=0.0,
                             max_value=0.99,
                             value=asset.emode_liquidation_threshold,
                             label_visibility="collapsed",
@@ -495,7 +491,6 @@ with st.sidebar:
                     with input_col:
                         asset.emode_liquidation_bonus = st.number_input(
                             label=f"e-mode liquidation bonus ({name})",
-                            min_value=0.0,
                             max_value=0.2,
                             value=asset.emode_liquidation_bonus,
                             label_visibility="collapsed",
@@ -533,7 +528,6 @@ with st.sidebar:
                     print("session_state assets:")
                     for asset in st.session_state["assets"]:
                         print(f" - {asset.name}")
-                    st.rerun()
 
                 mm = st.session_state["money_market"]
                 for name in mm.asset_list:
