@@ -444,7 +444,7 @@ with st.sidebar:
                 with input_col:
                     asset.liquidation_threshold = st.number_input(
                         label=f"liquidation threshold ({name})",
-                        min_value=0.25,
+                        min_value=0.0,
                         max_value=0.99,
                         value=asset.liquidation_threshold,
                         label_visibility="collapsed",
@@ -457,7 +457,7 @@ with st.sidebar:
                 with input_col:
                     asset.liquidation_bonus = st.number_input(
                         label=f"liquidation bonus ({name})",
-                        min_value=0.01,
+                        min_value=0.00,
                         max_value=0.2,
                         value=asset.liquidation_bonus,
                         label_visibility="collapsed",
@@ -482,7 +482,7 @@ with st.sidebar:
                     with input_col:
                         asset.emode_liquidation_threshold = st.number_input(
                             label=f"e-mode liquidation threshold ({name})",
-                            min_value=0.5,
+                            min_value=0.0,
                             max_value=0.99,
                             value=asset.emode_liquidation_threshold,
                             label_visibility="collapsed",
@@ -495,7 +495,7 @@ with st.sidebar:
                     with input_col:
                         asset.emode_liquidation_bonus = st.number_input(
                             label=f"e-mode liquidation bonus ({name})",
-                            min_value=0.01,
+                            min_value=0.0,
                             max_value=0.2,
                             value=asset.emode_liquidation_bonus,
                             label_visibility="collapsed",
