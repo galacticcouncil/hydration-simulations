@@ -528,6 +528,7 @@ with st.sidebar:
                     print("session_state assets:")
                     for asset in st.session_state["assets"]:
                         print(f" - {asset.name}")
+                    st.rerun()
 
                 mm = st.session_state["money_market"]
                 for name in mm.asset_list:
