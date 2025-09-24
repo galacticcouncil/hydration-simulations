@@ -17,7 +17,7 @@ from hydradx.model.amm.omnipool_router import OmnipoolRouter
 from hydradx.model.amm.money_market import MoneyMarket, MoneyMarketAsset, CDP
 from hydradx.model.amm.omnipool_amm import OmnipoolState
 from hydradx.model.amm.stableswap_amm import StableSwapPoolState
-from hydradx.model.amm.trade_strategies import liquidate_cdps, schedule_swaps
+from hydradx.model.amm.trade_strategies import liquidate_cdps, schedule_swaps, omnipool_arbitrage
 from hydradx.model.processing import get_current_money_market, save_money_market, load_money_market as load_money_market_from_file
 from hydradx.model.amm.agents import Agent
 from hydradx.model.run import run
@@ -197,6 +197,7 @@ def rebuild_money_market():
     old_prices = {asset.name: asset.price for asset in initial_mm.assets.values()}
     for asset in st.session_state.get("assets", []):
         new_mm.add_new_asset(asset)
+
     changed_prices = {asset.name for asset in st.session_state.get("assets", []) if asset.price != old_prices.get(asset.name, None)}
     for cdp in initial_cdps:
         new_cdp = cdp.copy()
@@ -267,7 +268,7 @@ price_change_defaults = {
     tkn: 0 for tkn in main_tokens
 }
 price_change_defaults.update({
-    'DOT': -50,
+    'HDX': -20,
 })
 # determine start prices for all tokens
 start_price = {
@@ -297,18 +298,22 @@ for exchange in initial_stableswaps:
                 start_price[tkn] = exchange.price(tkn, start_price[priced_tokens[0]]) * start_price[priced_tokens[0]]
 
 st.session_state.setdefault("time_steps", 10)
-st.session_state.setdefault("add_collateral", {})
-st.session_state.setdefault("add_debt", {})
+st.session_state.setdefault("add_collateral", {"HDX": 1_000_000})
+st.session_state.setdefault("add_debt", {"USDT": 600_000})
 st.session_state.setdefault("price_change", {
     tkn: price_change_defaults[tkn] for tkn in price_change_defaults if price_change_defaults[tkn] != 0
 })
-st.session_state.setdefault("debt_totals", {
-    tkn: sum([cdp.debt[tkn] for cdp in initial_mm.cdps if tkn in cdp.debt]) for tkn in initial_mm.borrowed
-})
-st.session_state.setdefault("collateral_totals", {
-    tkn: sum([cdp.collateral[tkn] for cdp in initial_mm.cdps if tkn in cdp.collateral]) for tkn in initial_mm.asset_list
-})
 st.session_state["run_simulation"] = False
+if "HDX" not in st.session_state.money_market.asset_list:
+    hdx = MoneyMarketAsset(
+        name="HDX",
+        price=start_price["HDX"],
+        liquidation_threshold=0.7,
+        liquidation_bonus=0.05,
+    )
+    st.session_state.money_market.add_new_asset(hdx)
+    st.session_state.money_market.asset_list.sort(key=lambda x: -1 if x == "HDX" else 0)
+    st.session_state.assets = [hdx] + st.session_state.assets
 
 with st.sidebar:
     def sidebar_builder():
@@ -386,16 +391,16 @@ with st.sidebar:
                 for asset, val in sorted(st.session_state[key].items()):
                     name_col, amt_col, del_col = st.columns([5, 3, 2])
                     with name_col:
-                        st.write(asset)
+                        st.markdown(f":red[{asset}]")
                     with amt_col:
                         if number_format == "%":
-                            st.write(f"{"+" if val > 0 else ""}{val:,.0f}%")
+                            st.markdown(f":red[{"+" if val > 0 else ""}{val:,.0f}%]")
                         elif number_format == "$":
-                            st.write(f"${val:,.0f}")
+                            st.markdown(f":red[${val:,.0f}]")
                         else:
                             if number_format != '':
                                 print(f"WARNING: unrecognized number format in change_param_form() ({number_format})")
-                            st.write(f"{val:,.0f}")
+                            st.markdown(f":red[{val:,.0f}]")
                     with del_col:
                         st.button(
                             "✕",
@@ -550,24 +555,26 @@ with st.sidebar:
         change_param_form(
             key="add_collateral",
             title="Add collateral",
-            tokens=lambda: st.session_state["money_market"].asset_list,
-            default_token="DOT",
-            default_value=1_000_000,
+            tokens=st.session_state["money_market"].asset_list,
+            default_token="HDX",
+            default_value=3_000_000,
             min_value=-1_000_000_000,
             max_value=1_000_000_000,
             on_change=st.rerun,
-            number_format="$"
+            number_format="$",
+            expanded=True
         )
         change_param_form(
             key="add_debt",
             title="Add debt",
-            tokens=lambda: st.session_state["money_market"].asset_list,
+            tokens=st.session_state["money_market"].asset_list,
             default_token="USDT",
-            default_value=700_000,
+            default_value=1_800_000,
             min_value=-1_000_000_000,
             max_value=1_000_000_000,
             on_change=st.rerun,
-            number_format="$"
+            number_format="$",
+            expanded=True
         )
         money_market_config_section()
 
@@ -629,11 +636,7 @@ def run_app():
                 'sell_quantity': net_swap if net_swap > 0 else None,
                 'buy_quantity': -net_swap if net_swap < 0 else None,
             })
-    #
-    # config_list = [
-    #     {'exchanges': {'router': ['DOT', 'vDOT'], '2-Pool-GDOT': ['aDOT', 'vDOT']}, 'buffer': 0.001},
-    #     {'exchanges': {'omnipool': ['DOT', 'vDOT'], '2-Pool-GDOT': ['aDOT', 'vDOT']}, 'buffer': 0.001},
-    # ]
+
     omnipool = copy.deepcopy(initial_omnipool)
     stableswaps = [exchange.copy() for exchange in initial_stableswaps]
     router = initial_router.copy()
@@ -650,6 +653,13 @@ def run_app():
                     pool_id='router'
                 )
             ),
+            'arbitrageur': Agent(
+                enforce_holdings=False,
+                trade_strategy=omnipool_arbitrage(
+                    pool_id='omnipool',
+                    skip_assets=[asset for asset in st.session_state["money_market"].asset_list if asset not in omnipool.liquidity],
+                )
+            )
             # 'arbitrageur': Agent(
             #     enforce_holdings=False,
             #     trade_strategy=general_arbitrage(
@@ -708,33 +718,37 @@ def run_app():
             ax.annotate(
                 f"${(int(p) if d==0 else f'{p:.2f}' if d<=2 else round(p, d))}",
                 xy=(0, tkn_price_path[0]),
-                xytext=(0, tkn_price_path[0] * (1.05 if tkn_price_path[0] < tkn_price_path[-1] else 0.95))
+                xytext=(0, min(tkn_price_path) if tkn_price_path[0] > tkn_price_path[-1] else max(tkn_price_path))
             )
             ax.scatter(marker='o', s=20, x=0, y=tkn_price_path[0], color='#009')
             p = tkn_price_path[-1]
             ax.annotate(
                 f"${(int(p) if d==0 else f'{p:.2f}' if d<=2 else round(p, d))}",
                 xy=(len(tkn_price_path)-1, tkn_price_path[-1]),
-                xytext=(len(tkn_price_path) - 1.4, tkn_price_path[-1] * (1.05 if tkn_price_path[0] > tkn_price_path[-1] else 0.95))
+                xytext=(len(tkn_price_path) - 1.4, min(tkn_price_path) if tkn_price_path[0] < tkn_price_path[-1] else max(tkn_price_path))
             )
             ax.scatter(marker='o', s=20, x=len(tkn_price_path)-1, y=tkn_price_path[-1], color='#009')
             st.pyplot(fig)
 
-    with st.expander(f"Liquidator holdings"):
-        fig, ax = plt.subplots(figsize=(16, 6))
-        ax.set_xlabel("Time Steps")
-        ax.set_ylabel(f"Liquidator Holdings (normalized to initial USD price)")
-        for tkn in events[-1].agents['liquidator'].holdings:
-            liquidator_holdings = [
-                event.agents['liquidator'].get_holdings(tkn) * start_price[tkn] / start_price['USD']
-                for event in events
-            ]
-            if max(liquidator_holdings) == 0:
-                continue
-            ax.plot(liquidator_holdings, label=f"{tkn}")
-        ax.legend()
-        st.pyplot(fig)
+    @st.fragment
+    def plot_agent_holdings(agent_id):
+        with st.expander(f"{agent_id} holdings"):
+            fig, ax = plt.subplots(figsize=(16, 6))
+            ax.set_xlabel("Time Steps")
+            ax.set_ylabel(f"{agent_id} holdings (normalized to initial USD price)")
+            for tkn in events[-1].agents[agent_id].holdings:
+                liquidator_holdings = [
+                    event.agents[agent_id].get_holdings(tkn) * start_price[tkn] / start_price['USD']
+                    for event in events
+                ]
+                if max(liquidator_holdings) == 0:
+                    continue
+                ax.plot(liquidator_holdings, label=f"{tkn}")
+            ax.legend()
+            st.pyplot(fig)
 
+    plot_agent_holdings('liquidator')
+    plot_agent_holdings('arbitrageur')
 
     @st.fragment
     def plot_toxic_debt():
