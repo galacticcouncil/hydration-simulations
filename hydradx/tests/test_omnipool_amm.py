@@ -6,6 +6,7 @@ from hypothesis import given, strategies as st, assume, settings, reproduce_fail
 import mpmath
 from mpmath import mp, mpf
 import os
+
 os.chdir('../..')
 
 from hydradx.model import run, processing
@@ -2162,6 +2163,47 @@ def test_calculate_buy_from_sell(omnipool: oamm.OmnipoolState):
     if sell_quantity != pytest.approx(actual_sell_quantity, rel=1e-40):
         raise AssertionError(f'sell_quantity {sell_quantity} != actual_sell_quantity {actual_sell_quantity}')
     # buy_quantity_2 = omnipool.calculate_buy_from_sell(
+
+
+@given(
+    tkn_liquidity = st.floats(min_value=100000, max_value=10000000),
+    tkn_lrna = st.floats(min_value=10000, max_value=1000000)
+)
+def test_calculate_lrna_swaps(tkn_liquidity, tkn_lrna):
+    omnipool = OmnipoolState(
+        tokens={
+            "HDX": {"liquidity": mpf(10000000), "LRNA": mpf(1000000)},
+            "USDT": {"liquidity": mpf(1000000), "LRNA": mpf(1000000)},
+            "TKN": {"liquidity": mpf(tkn_liquidity), "LRNA": mpf(tkn_liquidity)}
+        },
+        lrna_fee=0.0005,
+        asset_fee=0.0025,
+    )
+    agent = Agent(enforce_holdings=False)
+    for swap in [{"tkn_sell": "LRNA", "tkn_buy": "TKN"}, {"tkn_sell": "TKN", "tkn_buy": "LRNA"}]:
+        tkn_sell = swap["tkn_sell"]
+        tkn_buy = swap["tkn_buy"]
+        sell_quantity = 1
+        buy_quantity = omnipool.calculate_buy_from_sell(
+            tkn_sell=tkn_sell,
+            tkn_buy=tkn_buy,
+            sell_quantity=sell_quantity
+        )
+        agent.holdings[tkn_buy] = 0
+        omnipool.swap(tkn_sell=tkn_sell, tkn_buy=tkn_buy, sell_quantity=sell_quantity, agent=agent)
+        actual_buy_quantity = agent.get_holdings(tkn_buy)
+        if buy_quantity != pytest.approx(actual_buy_quantity, rel=1e-40):
+            raise AssertionError(f'buy_quantity {buy_quantity} != actual_buy_quantity {actual_buy_quantity}')
+        sell_quantity = omnipool.calculate_sell_from_buy(
+            tkn_sell=tkn_sell,
+            tkn_buy=tkn_buy,
+            buy_quantity=buy_quantity
+        )
+        agent.holdings[tkn_sell] = 0
+        omnipool.swap(tkn_sell=tkn_sell, tkn_buy=tkn_buy, buy_quantity=buy_quantity, agent=agent)
+        actual_sell_quantity = -agent.get_holdings(tkn_sell)
+        if sell_quantity != pytest.approx(actual_sell_quantity, rel=1e-40):
+            raise AssertionError(f'sell_quantity {sell_quantity} != actual_sell_quantity {actual_sell_quantity}')
 
 
 @given(
