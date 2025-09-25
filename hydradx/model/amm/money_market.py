@@ -62,7 +62,7 @@ class MoneyMarketAsset:
             emode_liquidation_threshold: float = None,
             emode_ltv: float = None,
             emode_label: str = '',
-            liquidity: float = float('inf'),
+            liquidity: float = 0,
             supply_cap: float = float('inf')
     ):
         self.name = name
@@ -178,6 +178,8 @@ class MoneyMarket(Exchange):
             if tkn not in self.borrowed:
                 self.borrowed[tkn] = 0
             self.borrowed[tkn] += cdp.debt[tkn]
+        for tkn in cdp.collateral:
+            self.liquidity[tkn] += cdp.collateral[tkn]
         return self
 
     def add_cdps(self, cdps: list[CDP]):
@@ -456,6 +458,9 @@ class MoneyMarket(Exchange):
 
         if buy_quantity > self.liquidity[tkn_buy] - self.borrowed[tkn_buy]:
             return self.fail_transaction('Not enough liquidity')
+
+        if sell_quantity + self.liquidity[tkn_sell] > self.assets[tkn_sell].supply_cap:
+            return self.fail_transaction('Supply cap exceeded')
 
         if not agent.validate_holdings(tkn_sell, sell_quantity):
             return self.fail_transaction('Not enough holdings')
