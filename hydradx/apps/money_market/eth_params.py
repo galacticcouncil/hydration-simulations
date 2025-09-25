@@ -65,7 +65,7 @@ def load_omnipool_router() -> tuple[OmnipoolRouter, str]:
         1 / load_omnipool.lrna_price('2-Pool-Stbl') / 1.01  # fudging this because I can't get the stableswap pool shares
     )
     load_omnipool.add_token(
-        'USD', liquidity = usd_price_lrna, lrna=1
+        'USD', liquidity = usd_price_lrna * 1000000, lrna=1000000
     ).stablecoin = 'USD'
     print('finished downloading omnipool data')
     return OmnipoolRouter(exchanges=[load_omnipool, *stableswap_pools], unique_id='router'), cache_time
@@ -90,7 +90,6 @@ def load_money_market(block_number: int) -> MoneyMarket | None:
     # toss out any existing toxic CDPs
     load_mm.cdps = [cdp for cdp in load_mm.cdps if not load_mm.is_liquidatable(cdp)]
     load_mm.borrowed = {tkn: sum([cdp.debt[tkn] for cdp in load_mm.cdps if tkn in cdp.debt]) for tkn in load_mm.borrowed}
-
     try:
         save_money_market(load_mm, filename=f"money_market_savefile_{block_number}")
     except FileNotFoundError:
@@ -226,9 +225,6 @@ initial_router.exchanges['money_market'] = initial_mm
 initial_router.asset_list = list(set(initial_router.asset_list) | set(initial_mm.asset_list))
 initial_stableswaps = [exchange for exchange in initial_router.exchanges.values() if isinstance(exchange, StableSwapPoolState)]
 
-st.session_state.setdefault("assets", [asset.copy() for asset in initial_mm.assets.values()])
-st.session_state["money_market"] = rebuild_money_market()
-
 equivalency_map = {
     'Wrapped staked ETH': 'ETH',
     'Wrapped ETH (Moonbeam Wormhole)': 'ETH',
@@ -264,16 +260,10 @@ main_tokens = [
 ]
 main_tokens = sorted(main_tokens, key=lambda x: initial_router.liquidity[x] if x in initial_router.liquidity else float('inf'), reverse=True)
 print(f"Main tokens: {main_tokens}")
-price_change_defaults = {
-    tkn: 0 for tkn in main_tokens
-}
-price_change_defaults.update({
-    'HDX': -20,
-})
 # determine start prices for all tokens
 start_price = {
-    tkn: initial_mm.price(tkn) if tkn in initial_mm.asset_list
-    else initial_omnipool.usd_price(tkn) if tkn in initial_omnipool.asset_list
+    tkn: initial_omnipool.usd_price(tkn) if tkn in initial_omnipool.asset_list
+    else initial_mm.price(tkn) if tkn in initial_mm.asset_list
     else (
         initial_omnipool.usd_price(equivalency_map[tkn]) if equivalency_map[tkn] in initial_omnipool.asset_list
         else initial_mm.price(equivalency_map[tkn]) if equivalency_map[tkn] in initial_mm.asset_list else 0
@@ -281,6 +271,15 @@ start_price = {
     else 0
     for tkn in sorted(set(initial_router.asset_list) | set(equivalency_map.values()), key=lambda x: x in initial_mm.asset_list)
 }
+hdx = MoneyMarketAsset(
+    name="HDX",
+    price=start_price["HDX"],
+    liquidation_threshold=0.7,
+    liquidation_bonus=0.05,
+    supply_cap=0
+)
+initial_mm.add_new_asset(hdx)
+initial_mm.asset_list.sort(key=lambda x: -1 if x == "HDX" else 0)
 for tkn in start_price:
     if start_price[tkn] == 0:
         eqs = [key for key in equivalency_map if equivalency_map[key] == tkn and key in initial_mm.asset_list]
@@ -301,19 +300,14 @@ st.session_state.setdefault("time_steps", 10)
 st.session_state.setdefault("add_collateral", {"HDX": 1_000_000})
 st.session_state.setdefault("add_debt", {"USDT": 600_000})
 st.session_state.setdefault("price_change", {
-    tkn: price_change_defaults[tkn] for tkn in price_change_defaults if price_change_defaults[tkn] != 0
+    "HDX": -20
 })
+st.session_state.setdefault("assets", [asset.copy() for asset in initial_mm.assets.values()])
+if "money_market" not in st.session_state:
+    for asset in st.session_state.get("assets", []):
+        asset.price = start_price[asset.name]
+st.session_state["money_market"] = rebuild_money_market()
 st.session_state["run_simulation"] = False
-if "HDX" not in st.session_state.money_market.asset_list:
-    hdx = MoneyMarketAsset(
-        name="HDX",
-        price=start_price["HDX"],
-        liquidation_threshold=0.7,
-        liquidation_bonus=0.05,
-    )
-    st.session_state.money_market.add_new_asset(hdx)
-    st.session_state.money_market.asset_list.sort(key=lambda x: -1 if x == "HDX" else 0)
-    st.session_state.assets = [hdx] + st.session_state.assets
 
 with st.sidebar:
     def sidebar_builder():
@@ -657,7 +651,7 @@ def run_app():
                 enforce_holdings=False,
                 trade_strategy=omnipool_arbitrage(
                     pool_id='omnipool',
-                    skip_assets=[asset for asset in st.session_state["money_market"].asset_list if asset not in omnipool.liquidity],
+                    skip_assets=[asset for asset in st.session_state["money_market"].asset_list if asset not in omnipool.liquidity] + ['HDX'],
                 )
             )
             # 'arbitrageur': Agent(
@@ -931,6 +925,23 @@ def run_app():
             st.pyplot(fig)
 
     plot_omnipool_assets()
+
+    def get_hdx_total(state: GlobalState):
+        total = {}
+        for pool in state.pools['router'].exchanges.values():
+            if 'HDX' in pool.liquidity:
+                total[pool.unique_id] = pool.liquidity['HDX']
+        total['money_market_collateral'] = sum([
+            cdp.collateral.get('HDX', 0) for cdp in state.pools['router'].exchanges['money_market'].cdps
+        ])
+        for key, agent in state.agents.items():
+            total[f"agent: {key}"] = agent.get_holdings('HDX')
+        return total
+
+    initial_hdx = get_hdx_total(initial_state)
+    final_hdx = get_hdx_total(events[-1])
+    hdx_change = sum(final_hdx.values()) - sum(initial_hdx.values())
+    pass
 
 col1, col2, col3 = st.columns([1, 2, 1])
 with col2:
