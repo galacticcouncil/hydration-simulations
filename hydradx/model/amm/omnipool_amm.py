@@ -435,18 +435,33 @@ class OmnipoolState(Exchange):
         """
         Given a buy quantity, calculate the effective price, so we can execute it as a sell
         """
-        asset_fee = self.asset_fee(tkn_buy)
-        if buy_quantity >= self.liquidity[tkn_buy] * (1 - asset_fee):
-            return float('inf')
-        delta_Qj = self.lrna[tkn_buy] * buy_quantity / (
-                self.liquidity[tkn_buy] * (1 - asset_fee) - buy_quantity)
-        lrna_fee = self.lrna_fee(tkn_sell)
-        # lrna_fee = self.last_lrna_fee[tkn_sell]
-        delta_Qi = -delta_Qj / (1 - lrna_fee)
-        if -delta_Qi >= self.lrna[tkn_sell]:
-            return float('inf')
-        delta_Ri = -self.liquidity[tkn_sell] * delta_Qi / (self.lrna[tkn_sell] + delta_Qi)
-        return delta_Ri
+
+        if tkn_sell == "LRNA":
+            asset_fee = self.asset_fee(tkn_buy)
+            denom = (self.liquidity[tkn_buy] * (1 - asset_fee) - buy_quantity)
+            delta_qa = self.lrna[tkn_buy] * buy_quantity / denom
+            return delta_qa
+
+        # buying LRNA
+        elif tkn_buy == "LRNA":
+            lrna_fee = self.lrna_fee(tkn_sell)
+            lrna_fee_total = buy_quantity / (1 - lrna_fee) - buy_quantity
+            delta_qi = -buy_quantity - lrna_fee_total
+            delta_ra = self.liquidity[tkn_sell] * -delta_qi / (delta_qi + self.lrna[tkn_sell])
+            return delta_ra
+        else:
+            asset_fee = self.asset_fee(tkn_buy)
+            if buy_quantity >= self.liquidity[tkn_buy] * (1 - asset_fee):
+                return float('inf')
+            delta_Qj = self.lrna[tkn_buy] * buy_quantity / (
+                    self.liquidity[tkn_buy] * (1 - asset_fee) - buy_quantity)
+            lrna_fee = self.lrna_fee(tkn_sell)
+            # lrna_fee = self.last_lrna_fee[tkn_sell]
+            delta_Qi = -delta_Qj / (1 - lrna_fee)
+            if -delta_Qi >= self.lrna[tkn_sell]:
+                return float('inf')
+            delta_Ri = -self.liquidity[tkn_sell] * delta_Qi / (self.lrna[tkn_sell] + delta_Qi)
+            return delta_Ri
 
     def calculate_buy_from_sell(
             self,
@@ -457,13 +472,24 @@ class OmnipoolState(Exchange):
         """
         Given a sell quantity, calculate the effective price, so we can execute it as a buy
         """
-        delta_Ri = sell_quantity
-        delta_Qi = self.lrna[tkn_sell] * -delta_Ri / (self.liquidity[tkn_sell] + delta_Ri)
-        asset_fee = self.asset_fee(tkn_buy)
-        lrna_fee = self.lrna_fee(tkn_sell)
-        delta_Qt = -delta_Qi * (1 - lrna_fee)
-        delta_Rj = self.liquidity[tkn_buy] * -delta_Qt / (self.lrna[tkn_buy] + delta_Qt) * (1 - asset_fee)
-        return -delta_Rj
+        if tkn_sell == "LRNA":
+            asset_fee = self.asset_fee(tkn_buy)
+            delta_ra = self.liquidity[tkn_buy] * sell_quantity / (sell_quantity + self.lrna[tkn_buy]) * (1 - asset_fee)
+            return delta_ra
+        elif tkn_buy == "LRNA":
+            lrna_fee = self.lrna_fee(tkn_sell)
+            delta_qi = self.lrna[tkn_sell] * sell_quantity / (self.liquidity[tkn_sell] + sell_quantity)
+            lrna_fee_total = -delta_qi * lrna_fee
+            delta_qa = delta_qi + lrna_fee_total
+            return delta_qa
+        else:
+            delta_Ri = sell_quantity
+            delta_Qi = self.lrna[tkn_sell] * -delta_Ri / (self.liquidity[tkn_sell] + delta_Ri)
+            asset_fee = self.asset_fee(tkn_buy)
+            lrna_fee = self.lrna_fee(tkn_sell)
+            delta_Qt = -delta_Qi * (1 - lrna_fee)
+            delta_Rj = self.liquidity[tkn_buy] * -delta_Qt / (self.lrna[tkn_buy] + delta_Qt) * (1 - asset_fee)
+            return -delta_Rj
 
     def buy_spot(self, tkn_buy: str, tkn_sell: str, fee: float = None):
         if tkn_buy == tkn_sell:
