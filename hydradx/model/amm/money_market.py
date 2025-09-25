@@ -428,7 +428,12 @@ class MoneyMarket(Exchange):
         """
         assert tkn_sell in self.liquidity
         assert tkn_buy in self.liquidity
-        return sell_quantity * self.sell_spot(tkn_sell, tkn_buy)
+        if sell_quantity + self.liquidity[tkn_sell] > self.assets[tkn_sell].supply_cap:
+            return 0
+        buy_quantity = sell_quantity * self.sell_spot(tkn_sell, tkn_buy)
+        if buy_quantity > self.liquidity[tkn_buy] - self.borrowed[tkn_buy]:
+            return 0
+        return buy_quantity
 
 
     def calculate_sell_from_buy(self, tkn_buy: str, tkn_sell: str, buy_quantity: float) -> float:
@@ -437,7 +442,12 @@ class MoneyMarket(Exchange):
         """
         assert tkn_buy in self.liquidity
         assert tkn_sell in self.liquidity
-        return buy_quantity * self.buy_spot(tkn_buy, tkn_sell)
+        if buy_quantity > self.liquidity[tkn_buy] - self.borrowed[tkn_buy]:
+            return float('inf')
+        sell_quantity = buy_quantity * self.buy_spot(tkn_buy, tkn_sell)
+        if sell_quantity + self.liquidity[tkn_sell] > self.assets[tkn_sell].supply_cap:
+            return float('inf')
+        return sell_quantity
 
 
     def swap(self, agent: Agent, tkn_sell: str, tkn_buy: str, buy_quantity: float = None,
