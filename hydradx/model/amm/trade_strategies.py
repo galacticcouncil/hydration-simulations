@@ -8,6 +8,7 @@ from .money_market import MoneyMarket
 from .omnipool_amm import OmnipoolState
 from .stableswap_amm import StableSwapPoolState
 from .arbitrage_agent import get_arb_swaps, execute_arb
+from .omnipool_router import OmnipoolRouter
 from typing import Callable
 import random
 # from numbers import Number
@@ -429,7 +430,12 @@ def omnipool_arbitrage(pool_id: str, arb_precision=1, skip_assets=None, frequenc
         if state.time_step % frequency != 0:
             return state
 
-        omnipool: OmnipoolState = state.pools[pool_id]
+        omnipool: OmnipoolState = (
+            state.pools[pool_id]
+            if pool_id in state.pools
+            and isinstance(state.pools[pool_id], OmnipoolState)
+            else [pool for pool in state.pools.values() if isinstance(pool, OmnipoolRouter)][0].exchanges[pool_id]
+        )
         agent: Agent = state.agents[agent_id]
         if not isinstance(omnipool, OmnipoolState):
             raise AssertionError()
@@ -441,10 +447,10 @@ def omnipool_arbitrage(pool_id: str, arb_precision=1, skip_assets=None, frequenc
         asset_fees = []
         lrna_fees = []
         skip_ct = 0
-        usd_index = omnipool.asset_list.index(omnipool.stablecoin)
+        usd_index = list(omnipool.liquidity.keys()).index(omnipool.stablecoin)
 
-        for i in range(len(omnipool.asset_list)):
-            asset = omnipool.asset_list[i]
+        for i in range(len(omnipool.liquidity)):
+            asset = list(omnipool.liquidity.keys())[i]
 
             if asset in skip_assets:  # we may not want to arb all assets
                 skip_ct += 1
