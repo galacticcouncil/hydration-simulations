@@ -70,6 +70,11 @@ class Agent:
             return 0
         return self.holdings[tkn]
 
+    def get_initial_holdings(self, tkn) -> float:
+        if tkn not in self.initial_holdings:
+            return 0
+        return self.initial_holdings[tkn]
+
     def all_holdings(self) -> dict[str, float]:
         return {k: v for k, v in self.holdings.items() if v != 0}
 
