@@ -51,7 +51,7 @@ print("App start")
 
 @st.cache_data(ttl=3600, show_spinner="Loading Omnipool data (cached for 1 hour)...")
 def load_omnipool_router() -> tuple[OmnipoolRouter, str]:
-    block_number = 9190000
+    block_number = 9290000
     # Add timestamp to verify caching
     import datetime
     cache_time = datetime.datetime.now().strftime("%H:%M:%S")
@@ -60,7 +60,11 @@ def load_omnipool_router() -> tuple[OmnipoolRouter, str]:
     load_omnipool = load_router.exchanges['omnipool']
     if block_number is None:
         block_number = load_omnipool.time_step
-    stableswap_pools = [pool for pool in load_router.exchanges.values() if isinstance(pool, StableSwapPoolState)]
+    stableswap_pools = [
+        pool for pool in load_router.exchanges.values()
+        if isinstance(pool, StableSwapPoolState)
+        and min(pool.liquidity.values()) > 0
+    ]
     usd_price_lrna = (
         1 / load_omnipool.lrna_price('2-Pool-Stbl') / 1.01  # fudging this because I can't get the stableswap pool shares
     )
@@ -959,7 +963,7 @@ def plot_health_factor_distribution():
         resolution = st.slider(
             label="Resolution", min_value=20, max_value=500, step=10, key="resolution"
         )
-        smoothing = st.session_state.get("smoothing", 3.0)
+        smoothing = max(1.0, min(400 / resolution, 3.0))
         graph_by = st.radio(
             label="Graph health factor distribution by:",
             options=["debt", "collateral"],
