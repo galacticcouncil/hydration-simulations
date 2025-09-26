@@ -69,7 +69,7 @@ class OmnipoolRouter(Exchange):
             # default to price in USD
             numeraire = sorted([t for t in self.asset_list if t.startswith('USD')])[0]
 
-        return self.buy_spot(tkn_buy=numeraire, tkn_sell=tkn, fee=0)
+        return self.sell_spot(tkn_buy=numeraire, tkn_sell=tkn, fee=0)
 
     def calculate_buy_from_sell(self, tkn_sell: str, tkn_buy: str, sell_quantity: float, route: list[Trade] = None):
         """
