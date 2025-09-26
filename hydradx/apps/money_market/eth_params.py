@@ -140,9 +140,11 @@ def distribute_cdps(
             debt={tkn: extra_debt[tkn] / money_market.price(tkn) for tkn in extra_debt}
         ))
         hf_min = 1 / liquidation_threshold if liquidation_threshold > 0 else float('inf')
-        collateral_weights = truncated_bell_curve(
-            peak_x=hf_min if 1 < hf_min < 1_000_000 else 1, x_max=2, dist_length=num_cdps, sigma_scale=0.3, left_compression=4
-        )[1]
+        # collateral_weights = truncated_bell_curve(
+        #     peak_x=hf_min if 1 < hf_min < 1_000_000 else 1, x_max=2, dist_length=num_cdps, sigma_scale=0.3, left_compression=4
+        # )[1]
+        collateral_weights = np.logspace(2, 1, num_cdps) * np.linspace(0.02, 0.1, num_cdps)
+        collateral_weights /= collateral_weights.sum()
         print("Minimum collateral/debt ratio:", hf_min)
 
         collateral_remaining = extra_collateral_total
@@ -165,7 +167,7 @@ def distribute_cdps(
             )
             collateral_remaining -= money_market.value_assets(new_cdps[-1].collateral)
             debt_remaining -= money_market.value_assets(new_cdps[-1].debt)
-            cdp_collateral_ratio = max((cdp_collateral_ratio * 2 + collateral_remaining / debt_remaining) / 3, 1)
+            cdp_collateral_ratio = max((cdp_collateral_ratio * 4 + collateral_remaining / debt_remaining) / 5, 1)
 
         # correct rounding errors in the last CDP
         collateral_distributed = {
@@ -728,7 +730,12 @@ def run_app():
             ax.annotate(
                 f"${(int(p) if d==0 else f'{p:.2f}' if d<=2 else round(p, d))}\n({((p - tkn_price_path[0]) / tkn_price_path[0] * 100):+.1f}%)",
                 xy=(len(tkn_price_path)-1, tkn_price_path[-1]),
-                xytext=(len(tkn_price_path) - 1.4, min(tkn_price_path) if tkn_price_path[0] < tkn_price_path[-1] else max(tkn_price_path))
+                xytext=(
+                    len(tkn_price_path) - 1.4, min(tkn_price_path)
+                    if tkn_price_path[0] < tkn_price_path[-1]
+                    else max(tkn_price_path) - 0.05 * (max(tkn_price_path) - min(tkn_price_path))
+                ),
+                arrowprops=dict(arrowstyle="->")
             )
             ax.scatter(marker='o', s=20, x=len(tkn_price_path)-1, y=tkn_price_path[-1], color='#009')
             st.pyplot(fig)
@@ -963,7 +970,7 @@ def plot_health_factor_distribution():
         resolution = st.slider(
             label="Resolution", min_value=20, max_value=500, step=10, key="resolution"
         )
-        smoothing = max(1.0, min(400 / resolution, 3.0))
+        smoothing = max(0, min(400 / resolution - 1, 3.0))
         graph_by = st.radio(
             label="Graph health factor distribution by:",
             options=["debt", "collateral"],
