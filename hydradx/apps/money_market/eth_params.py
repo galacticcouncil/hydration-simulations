@@ -204,9 +204,9 @@ def rebuild_money_market():
         new_cdp.liquidation_threshold = None
         for tkn in changed_prices:
             if tkn in new_cdp.collateral:
-                new_cdp.collateral[tkn] *= new_mm.assets[tkn].price / old_prices[tkn]
+                new_cdp.collateral[tkn] *= old_prices[tkn] / new_mm.assets[tkn].price
             if tkn in new_cdp.debt:
-                new_cdp.debt[tkn] *= new_mm.assets[tkn].price / old_prices[tkn]
+                new_cdp.debt[tkn] *= old_prices[tkn] / new_mm.assets[tkn].price
         new_mm.add_cdp(new_cdp)
     new_mm.add_cdps(distribute_cdps(
         extra_collateral=st.session_state.get("add_collateral", {}),
