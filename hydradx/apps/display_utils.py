@@ -140,7 +140,6 @@ def truncated_bell_curve(peak_x, x_max, dist_length=100, sigma_scale=0.2, left_c
     x_values: array - x coordinates from 1 to x_max
     y_values: array - corresponding heights of the bell curve
     """
-
     def gaussian(x, mu, sigma):
         """Simple Gaussian function without scipy"""
         return np.exp(-0.5 * ((x - mu) / sigma) ** 2) / (sigma * np.sqrt(2 * np.pi))
@@ -155,7 +154,7 @@ def truncated_bell_curve(peak_x, x_max, dist_length=100, sigma_scale=0.2, left_c
     y_values = gaussian(x_values, peak_x, sigma)
 
     # Normalize to make the peak height = 1
-    y_values = y_values / sum(y_values)
+    y_values = y_values / np.max(y_values)
 
     # Apply your compression technique to the left side
     for i in range(len(y_values)):
