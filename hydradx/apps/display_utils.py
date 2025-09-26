@@ -122,3 +122,44 @@ def sigmoid_list(start, length, steepness=1.0, midpoint=None):
     shaped /= shaped.sum()
 
     return shaped
+
+
+def truncated_bell_curve(peak_x, x_max, dist_length=100, sigma_scale=0.2, left_compression=1.0):
+    """
+    Create a truncated bell curve starting at x=1 with specified peak location.
+    Uses pure numpy - no scipy required.
+
+    Parameters:
+    peak_x: float - where you want the peak to be located (must be >= 1)
+    x_max: float - the maximum x value (right truncation point)
+    dist_length: int - number of points in the distribution
+    sigma_scale: float - controls width of the bell curve (smaller = narrower)
+    left_compression: float - compression factor for left side (higher = more compression/slower rise)
+
+    Returns:
+    x_values: array - x coordinates from 1 to x_max
+    y_values: array - corresponding heights of the bell curve
+    """
+
+    def gaussian(x, mu, sigma):
+        """Simple Gaussian function without scipy"""
+        return np.exp(-0.5 * ((x - mu) / sigma) ** 2) / (sigma * np.sqrt(2 * np.pi))
+
+    # Create x values from 1 to x_max
+    x_values = np.linspace(1, x_max, dist_length)
+
+    # Calculate sigma based on the range to make the curve look good
+    sigma = (x_max - 1) * sigma_scale
+
+    # Create the bell curve centered at peak_x using pure numpy
+    y_values = gaussian(x_values, peak_x, sigma)
+
+    # Normalize to make the peak height = 1
+    y_values = y_values / sum(y_values)
+
+    # Apply your compression technique to the left side
+    for i in range(len(y_values)):
+        if x_values[i] < peak_x:
+            y_values[i] = 1 + (y_values[i] - 1) / left_compression
+
+    return x_values, y_values / sum(y_values)
