@@ -22,7 +22,7 @@ from hydradx.model.processing import get_current_money_market, save_money_market
 from hydradx.model.amm.agents import Agent
 from hydradx.model.run import run
 from hydradx.model.indexer_utils import get_current_omnipool_router
-from hydradx.apps.display_utils import get_distribution, one_line_markdown, sigmoid_list
+from hydradx.apps.display_utils import get_distribution, one_line_markdown, truncated_bell_curve
 from hydradx.model.amm.fixed_price import FixedPriceExchange
 
 st.markdown("""
@@ -51,7 +51,7 @@ print("App start")
 
 @st.cache_data(ttl=3600, show_spinner="Loading Omnipool data (cached for 1 hour)...")
 def load_omnipool_router() -> tuple[OmnipoolRouter, str]:
-    block_number = 9090000
+    block_number = 9190000
     # Add timestamp to verify caching
     import datetime
     cache_time = datetime.datetime.now().strftime("%H:%M:%S")
@@ -128,7 +128,6 @@ def distribute_cdps(
         ]
     else:
         num_cdps = 20
-        collateral_weights = sigmoid_list(0.1, 20, 3.0)
 
         # check the liquidation threshold of the collateral and debt assets
         # we'll set the health factor of the first CDP right above this threshold.
@@ -137,6 +136,9 @@ def distribute_cdps(
             debt={tkn: extra_debt[tkn] / money_market.price(tkn) for tkn in extra_debt}
         ))
         hf_min = 1 / liquidation_threshold if liquidation_threshold > 0 else float('inf')
+        collateral_weights = truncated_bell_curve(
+            peak_x=hf_min if 1 < hf_min < 1_000_000 else 1, x_max=2, dist_length=num_cdps, sigma_scale=0.3, left_compression=4
+        )[1]
         print("Minimum collateral/debt ratio:", hf_min)
 
         collateral_remaining = extra_collateral_total
@@ -151,15 +153,15 @@ def distribute_cdps(
                         for tkn in extra_collateral
                     },
                     debt={
-                        tkn: (collateral_weights[i] * extra_collateral_total / cdp_collateral_ratio)
-                             * (extra_debt[tkn] / extra_debt_total) / money_market.price(tkn)
+                        tkn: min((collateral_weights[i] * extra_collateral_total / cdp_collateral_ratio)
+                             / money_market.price(tkn), extra_debt[tkn])
                         for tkn in extra_debt
                     }
                 )
             )
             collateral_remaining -= money_market.value_assets(new_cdps[-1].collateral)
             debt_remaining -= money_market.value_assets(new_cdps[-1].debt)
-            cdp_collateral_ratio = (cdp_collateral_ratio + collateral_remaining / debt_remaining) / 2
+            cdp_collateral_ratio = max((cdp_collateral_ratio * 2 + collateral_remaining / debt_remaining) / 3, 1)
 
         # correct rounding errors in the last CDP
         collateral_distributed = {
@@ -207,7 +209,7 @@ def rebuild_money_market():
                 new_cdp.collateral[tkn] *= old_prices[tkn] / new_mm.assets[tkn].price
             if tkn in new_cdp.debt:
                 new_cdp.debt[tkn] *= old_prices[tkn] / new_mm.assets[tkn].price
-        new_mm.add_cdp(new_cdp)
+        # new_mm.add_cdp(new_cdp)
     new_mm.add_cdps(distribute_cdps(
         extra_collateral=st.session_state.get("add_collateral", {}),
         extra_debt=st.session_state.get("add_debt", {}),
@@ -587,6 +589,9 @@ def run_app():
     def update_prices(state: GlobalState):
         for price_tkn in price_paths:
             relevant_pools = [pool for pool in state.pools['router'].exchanges.values() if price_tkn in pool.asset_list]
+            if price_tkn == "HDX":
+                # there is no external market for HDX, so we set the price in the money market to the omnipool price
+                price_paths[price_tkn][state.time_step - 1] = state.pools['router'].exchanges['omnipool'].usd_price('HDX')
             for pool in relevant_pools:
                 if isinstance(pool, FixedPriceExchange):
                     pool.prices[price_tkn] = price_paths[price_tkn][state.time_step - 1]
@@ -627,7 +632,7 @@ def run_app():
             swap_schedule[i].append({
                 'tkn_sell': tkn if net_swap > 0 else 'LRNA',
                 'tkn_buy': 'LRNA' if net_swap > 0 else tkn,
-                'sell_quantity': net_swap if net_swap > 0 else None,
+                'sell_quantity': net_swap if net_swap >= 0 else None,
                 'buy_quantity': -net_swap if net_swap < 0 else None,
             })
 
@@ -686,7 +691,7 @@ def run_app():
     router.find_routes('aDOT', 'USD', direction='buy')
     router.find_routes('aDOT', 'USD', direction='sell')
     events[-1].pools['router'].price('DOT', 'USD')
-    with st.expander(f"Prices over {time_steps} steps"):
+    with st.expander(f"Prices over {time_steps - 1} steps"):
         for tkn in sorted(start_price, key=lambda x: equivalency_map[x] if x in equivalency_map else x):
             fig, ax = plt.subplots(figsize=(16, 6))
             ax.set_xlabel("Time Steps")
@@ -717,7 +722,7 @@ def run_app():
             ax.scatter(marker='o', s=20, x=0, y=tkn_price_path[0], color='#009')
             p = tkn_price_path[-1]
             ax.annotate(
-                f"${(int(p) if d==0 else f'{p:.2f}' if d<=2 else round(p, d))}",
+                f"${(int(p) if d==0 else f'{p:.2f}' if d<=2 else round(p, d))}\n({((p - tkn_price_path[0]) / tkn_price_path[0] * 100):+.1f}%)",
                 xy=(len(tkn_price_path)-1, tkn_price_path[-1]),
                 xytext=(len(tkn_price_path) - 1.4, min(tkn_price_path) if tkn_price_path[0] < tkn_price_path[-1] else max(tkn_price_path))
             )
@@ -757,15 +762,12 @@ def run_app():
             fig, ax = plt.subplots(figsize=(16, 6))
             ax.set_xlabel("Time Steps")
             ax.set_ylabel("Toxic Debt")
-            toxic_debt = {
-                tkn: [
-                    sum([
-                        cdp.debt[tkn] if event.pools['money_market'].is_toxic(cdp) and tkn in cdp.debt else 0
-                        for cdp in event.pools['money_market'].cdps
-                    ])
-                    for event in events
-                ] for tkn in st.session_state["money_market"].borrowed
-            }
+            toxic_debt = {tkn: [0] * time_steps for tkn in st.session_state["money_market"].borrowed}
+            for i, event in enumerate(events):
+                for cdp in event.pools['money_market'].cdps:
+                    if event.pools['money_market'].get_health_factor(cdp) < 1:
+                        for tkn in cdp.debt:
+                            toxic_debt[tkn][i] += cdp.debt[tkn]
             toxic_debt.update(
                 {"all": [
                     sum([
@@ -949,7 +951,7 @@ with col2:
         st.session_state.run_simulation = True
 
 
-st.session_state.setdefault("resolution", 100)
+st.session_state.setdefault("resolution", 20)
 def plot_health_factor_distribution():
     mm = st.session_state["money_market"]
     with st.expander("CDP Health Factor Distribution"):
