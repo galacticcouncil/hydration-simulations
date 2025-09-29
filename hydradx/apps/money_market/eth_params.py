@@ -307,7 +307,7 @@ for exchange in initial_stableswaps:
             if tkn not in priced_tokens:
                 start_price[tkn] = exchange.price(tkn, start_price[priced_tokens[0]]) * start_price[priced_tokens[0]]
 
-st.session_state.setdefault("time_steps", 10)
+st.session_state.setdefault("time_steps", 20)
 st.session_state.setdefault("include_original_cdps", False)
 st.session_state.setdefault("resolution", 20)
 st.session_state.setdefault("add_collateral", {"HDX": 1_000_000})
@@ -604,6 +604,8 @@ def run_app():
     })
     # trade_agent = Agent(enforce_holdings=False)
     def update_prices(state: GlobalState):
+        if state.time_step >= len(price_paths[main_tokens[0]]):
+            return
         for price_tkn in price_paths:
             relevant_pools = [pool for pool in state.pools['router'].exchanges.values() if price_tkn in pool.asset_list]
             if price_tkn == "HDX":
@@ -693,6 +695,13 @@ def run_app():
         sim_start = time.time()
         events = run(initial_state, time_steps=time_steps, silent=True)
 
+        while max([
+            abs(events[-1].pools['router'].price(tkn, 'USD') - events[-2].pools['router'].price(tkn, 'USD'))
+            for tkn in router.asset_list
+        ]) > 0.01:
+            events.extend(run(events[-1], time_steps=1, silent=True))
+
+
         sim_time = time.time() - sim_start
         st.sidebar.info(f"Simulation completed in {sim_time:.2f} seconds")
     st.header("Simulation Results")
@@ -708,7 +717,7 @@ def run_app():
     router.find_routes('aDOT', 'USD', direction='buy')
     router.find_routes('aDOT', 'USD', direction='sell')
     events[-1].pools['router'].price('DOT', 'USD')
-    with st.expander(f"Prices over {time_steps - 1} steps"):
+    with st.expander(f"Prices over {len(events)} steps"):
         for tkn in sorted(start_price, key=lambda x: equivalency_map[x] if x in equivalency_map else x):
             fig, ax = plt.subplots(figsize=(16, 6))
             ax.set_xlabel("Time Steps")
@@ -719,7 +728,8 @@ def run_app():
                 else event.pools['money_market'].price(tkn)
                 if tkn in event.pools['money_market'].asset_list
                 else event.pools['router'].price(tkn, 'USD') if tkn in event.pools['router'].asset_list
-                else price_paths[tkn][i]
+                else price_paths[tkn][i] if i < len(price_paths[tkn])
+                else price_paths[tkn][-1]
                 for i, event in enumerate(events)
             ]
             if max(tkn_price_path) == 0:
@@ -784,10 +794,10 @@ def run_app():
             fig, ax = plt.subplots(figsize=(16, 6))
             ax.set_xlabel("Time Steps")
             ax.set_ylabel("Toxic Debt")
-            toxic_debt = {tkn: [0] * time_steps for tkn in st.session_state["money_market"].borrowed}
+            toxic_debt = {tkn: [0] * len(events) for tkn in st.session_state["money_market"].borrowed}
             for i, event in enumerate(events):
                 for cdp in event.pools['money_market'].cdps:
-                    if event.pools['money_market'].get_health_factor(cdp) < 1:
+                    if event.pools['money_market'].is_toxic(cdp):
                         for tkn in cdp.debt:
                             toxic_debt[tkn][i] += cdp.debt[tkn]
             toxic_debt.update(
@@ -798,7 +808,7 @@ def run_app():
                             if st.session_state["toxic_debt_view"] != "USD at initial prices"
                             else start_price[tkn]
                         ) for tkn in toxic_debt
-                    ]) for i in range(time_steps)
+                    ]) for i in range(len(events))
                 ]}
             )
             if not st.session_state.toxic_debt_breakdown:
@@ -884,7 +894,7 @@ def run_app():
                             else start_price[tkn]
                         ) for tkn in collateral_tokens
                     ])
-                    for i in range(time_steps)
+                    for i in range(len(events))
                 ]}
             )
             if not st.session_state.collateral_breakdown:
@@ -896,7 +906,7 @@ def run_app():
                 if st.session_state.collateral_view == "USD at initial prices":
                     ax.plot(
                         [
-                            collateral[i] * (start_price[tkn] if tkn in start_price else 1) for i in range(time_steps)
+                            collateral[i] * (start_price[tkn] if tkn in start_price else 1) for i in range(len(events))
                         ], label=f"{tkn}" if st.session_state.collateral_breakdown else None
                     )
                     ax.set_title("Collateral in USD valued at initial prices")
