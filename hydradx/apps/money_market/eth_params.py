@@ -215,12 +215,15 @@ def rebuild_money_market():
                 new_cdp.collateral[tkn] *= old_prices[tkn] / new_mm.assets[tkn].price
             if tkn in new_cdp.debt:
                 new_cdp.debt[tkn] *= old_prices[tkn] / new_mm.assets[tkn].price
-        # new_mm.add_cdp(new_cdp)
+        if st.session_state.include_original_cdps and new_mm.get_health_factor(cdp) >= 1:
+            new_mm.add_cdp(new_cdp)
+
     new_mm.add_cdps(distribute_cdps(
         extra_collateral=st.session_state.get("add_collateral", {}),
         extra_debt=st.session_state.get("add_debt", {}),
         money_market=new_mm
     ))
+    st.session_state.refresh_graphs = True
     return new_mm
 
 initial_router, cache_timestamp = load_omnipool_router()
@@ -305,6 +308,8 @@ for exchange in initial_stableswaps:
                 start_price[tkn] = exchange.price(tkn, start_price[priced_tokens[0]]) * start_price[priced_tokens[0]]
 
 st.session_state.setdefault("time_steps", 10)
+st.session_state.setdefault("include_original_cdps", False)
+st.session_state.setdefault("resolution", 20)
 st.session_state.setdefault("add_collateral", {"HDX": 1_000_000})
 st.session_state.setdefault("add_debt", {"USDT": 600_000})
 st.session_state.setdefault("price_change", {
@@ -315,6 +320,8 @@ if "money_market" not in st.session_state:
     for asset in st.session_state.get("assets", []):
         asset.price = start_price[asset.name]
 st.session_state["money_market"] = rebuild_money_market()
+st.session_state.setdefault("asset_changed", False)
+st.session_state["refresh_graphs"] = True
 st.session_state["run_simulation"] = False
 
 with st.sidebar:
@@ -417,6 +424,7 @@ with st.sidebar:
             def update_asset(name, attr, value):
                 asset = [asset for asset in st.session_state["assets"] if asset.name == name][0]
                 setattr(asset, attr, value)
+                rebuild_money_market()
 
             with st.container():
                 st.markdown(
@@ -535,7 +543,7 @@ with st.sidebar:
                     print("session_state assets:")
                     for asset in st.session_state["assets"]:
                         print(f" - {asset.name}")
-                    st.rerun()
+                    rebuild_money_market()
 
                 mm = st.session_state["money_market"]
                 for name in mm.asset_list:
@@ -562,7 +570,7 @@ with st.sidebar:
             default_value=3_000_000,
             min_value=-1_000_000_000,
             max_value=1_000_000_000,
-            on_change=st.rerun,
+            on_change=lambda: st.session_state.__setitem__("asset_changed", True),
             number_format="$",
             expanded=True
         )
@@ -574,11 +582,14 @@ with st.sidebar:
             default_value=1_800_000,
             min_value=-1_000_000_000,
             max_value=1_000_000_000,
-            on_change=st.rerun,
+            on_change=lambda: st.session_state.__setitem__("asset_changed", True),
             number_format="$",
             expanded=True
         )
         money_market_config_section()
+        if st.session_state.asset_changed:
+            st.session_state["money_market"] = rebuild_money_market()
+            st.session_state["asset_changed"] = False
 
     sidebar_builder()
 
@@ -961,86 +972,86 @@ with col2:
     if st.button("Run simulation", use_container_width=True):
         st.session_state.run_simulation = True
 
+if st.session_state.refresh_graphs:
+    def plot_health_factor_distribution():
+        mm = st.session_state["money_market"]
+        with st.expander("CDP Health Factor Distribution"):
 
-st.session_state.setdefault("resolution", 20)
-def plot_health_factor_distribution():
-    mm = st.session_state["money_market"]
-    with st.expander("CDP Health Factor Distribution"):
+            resolution = st.slider(
+                label="Resolution", min_value=20, max_value=500, step=10, key="resolution"
+            )
+            smoothing = max(0, min(400 / resolution - 1, 3.0))
+            graph_by = st.radio(
+                label="Graph health factor distribution by:",
+                options=["debt", "collateral"],
+                index=1,
+                key="health_factor_graph_by"
+            )
 
-        resolution = st.slider(
-            label="Resolution", min_value=20, max_value=500, step=10, key="resolution"
-        )
-        smoothing = max(0, min(400 / resolution - 1, 3.0))
-        graph_by = st.radio(
-            label="Graph health factor distribution by:",
-            options=["debt", "collateral"],
-            index=1,
-            key="health_factor_graph_by"
-        )
+            cdps = mm.cdps
+            health_factors = [cdp.health_factor for cdp in cdps]
+            bins, dist = get_distribution(
+                health_factors,
+                [mm.value_assets(cdp.debt) for cdp in cdps] if graph_by == "debt" else [mm.value_assets(cdp.collateral) for cdp in cdps],
+                resolution=resolution,
+                minimum=min(1, min(health_factors)),
+                maximum=2,
+                smoothing=smoothing
+            )
 
-        cdps = mm.cdps
-        health_factors = [cdp.health_factor for cdp in cdps]
-        bins, dist = get_distribution(
-            health_factors,
-            [mm.value_assets(cdp.debt) for cdp in cdps] if graph_by == "debt" else [mm.value_assets(cdp.collateral) for cdp in cdps],
-            resolution=resolution,
-            minimum=min(1, min(health_factors)),
-            maximum=2,
-            smoothing=smoothing
-        )
-
-        # Plot
-        fig, ax = plt.subplots(figsize=(16, 6))
-        ax.plot(bins, dist, label="Health Factor Distribution")
-        ax.set_xlabel("Health Factor")
-        ax.set_ylabel("Debt-weighted density" if graph_by == "debt" else "Collateral-weighted density")
-        st.pyplot(fig)
-
-
-plot_health_factor_distribution()
+            # Plot
+            fig, ax = plt.subplots(figsize=(16, 6))
+            ax.plot(bins, dist, label="Health Factor Distribution")
+            ax.set_xlabel("Health Factor")
+            ax.set_ylabel("Debt-weighted density" if graph_by == "debt" else "Collateral-weighted density")
+            st.pyplot(fig)
 
 
-def plot_cdp_value_distribution():
-    mm = st.session_state["money_market"]
-    with st.expander(f"Debt and collateral token amounts"):
-        total_debt = {tkn: sum([cdp.debt[tkn] for cdp in mm.cdps if tkn in cdp.debt]) for tkn in mm.borrowed}
-        total_collateral = {tkn: sum([cdp.collateral[tkn] for cdp in mm.cdps if tkn in cdp.collateral]) for tkn in mm.asset_list}
-        debt_values_usd = {tkn: total_debt[tkn] * mm.assets[tkn].price for tkn in total_debt}
-        collateral_values_usd = {tkn: total_collateral[tkn] * mm.assets[tkn].price for tkn in total_collateral}
-        total_debt_usd = sum(debt_values_usd.values())
-        total_collateral_usd = sum(collateral_values_usd.values())
-        (token_name, collateral_amt, debt_amt) = st.columns(3)
-        token_name.markdown("**Token**")
-        collateral_amt.markdown("**Total Collateral**")
-        debt_amt.markdown("**Total Debt**")
-        for tkn in mm.asset_list:
-            with token_name:
-                one_line_markdown(f"**{tkn}**")
-                one_line_markdown("-------------------")
-            with debt_amt:
-                if tkn in total_debt and total_debt[tkn] > 0:
-                    one_line_markdown(
-                        f"{total_debt[tkn]:,.2f} "
-                        f"({debt_values_usd[tkn]:,.2f} USD) "
-                        f"({debt_values_usd[tkn] / total_debt_usd * 100:.2f}%)"
-                    )
-                else:
-                    one_line_markdown("0")
-                one_line_markdown("-------------------")
-
-            with collateral_amt:
-                if tkn in total_collateral and total_collateral[tkn] > 0:
-                    one_line_markdown(
-                        f"{total_collateral[tkn]:,.2f} "
-                        f"({collateral_values_usd[tkn]:,.2f} USD) "
-                        f"({collateral_values_usd[tkn] / total_collateral_usd * 100:.2f}%)"
-                    )
-                else:
-                    one_line_markdown("0")
-                one_line_markdown("-------------------")
+    plot_health_factor_distribution()
 
 
-plot_cdp_value_distribution()
+    def plot_cdp_value_distribution():
+        mm = st.session_state["money_market"]
+        with st.expander(f"Debt and collateral token amounts"):
+            st.checkbox("include original CDPs", key="include_original_cdps", on_change=rebuild_money_market)
+            total_debt = {tkn: sum([cdp.debt[tkn] for cdp in mm.cdps if tkn in cdp.debt]) for tkn in mm.borrowed}
+            total_collateral = {tkn: sum([cdp.collateral[tkn] for cdp in mm.cdps if tkn in cdp.collateral]) for tkn in mm.asset_list}
+            debt_values_usd = {tkn: total_debt[tkn] * mm.assets[tkn].price for tkn in total_debt}
+            collateral_values_usd = {tkn: total_collateral[tkn] * mm.assets[tkn].price for tkn in total_collateral}
+            total_debt_usd = sum(debt_values_usd.values())
+            total_collateral_usd = sum(collateral_values_usd.values())
+            (token_name, collateral_amt, debt_amt) = st.columns(3)
+            token_name.markdown("**Token**")
+            collateral_amt.markdown("**Total Collateral**")
+            debt_amt.markdown("**Total Debt**")
+            for tkn in mm.asset_list:
+                with token_name:
+                    one_line_markdown(f"**{tkn}**")
+                    one_line_markdown("-------------------")
+                with debt_amt:
+                    if tkn in total_debt and total_debt[tkn] > 0:
+                        one_line_markdown(
+                            f"{total_debt[tkn]:,.2f} "
+                            f"({debt_values_usd[tkn]:,.2f} USD) "
+                            f"({debt_values_usd[tkn] / total_debt_usd * 100:.2f}%)"
+                        )
+                    else:
+                        one_line_markdown("0")
+                    one_line_markdown("-------------------")
+
+                with collateral_amt:
+                    if tkn in total_collateral and total_collateral[tkn] > 0:
+                        one_line_markdown(
+                            f"{total_collateral[tkn]:,.2f} "
+                            f"({collateral_values_usd[tkn]:,.2f} USD) "
+                            f"({collateral_values_usd[tkn] / total_collateral_usd * 100:.2f}%)"
+                        )
+                    else:
+                        one_line_markdown("0")
+                    one_line_markdown("-------------------")
+
+
+    plot_cdp_value_distribution()
 
 
 if st.session_state.run_simulation:
