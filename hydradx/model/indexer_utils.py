@@ -607,16 +607,16 @@ def get_current_omnipool_fees(
         asset_info = get_asset_info_by_ids(get_current_omnipool_assets())
 
     asset_fee = DynamicFee(
-        minimum=0.0015,
+        minimum=0.0025,
         maximum=0.05,
         amplification=2,
-        decay=0.001
+        decay=0.00001
     )
     lrna_fee = DynamicFee(
         minimum=0.0005,
-        maximum=0.01,
+        maximum=0.001,
         amplification=1,
-        decay=0.005
+        decay=0.000005
     )
     blocks_per_query = 100
     max_queries = int(max(
