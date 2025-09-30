@@ -232,11 +232,13 @@ class OmnipoolRouter(Exchange):
                         set(sell_pool.asset_list + [sell_pool.unique_id]) & set(intermediate_pool.asset_list)
                         - {tkn_buy, tkn_sell}
                     )
+                    if len(intermediate_sell_tkns) == 0:
+                        continue
                     intermediate_buy_tkns = (
                         set(buy_pool.asset_list + [buy_pool.unique_id]) & set(intermediate_pool.asset_list)
                         - {tkn_buy, tkn_sell} - intermediate_sell_tkns
                     )
-                    if len(intermediate_sell_tkns) == 0 or len(intermediate_buy_tkns) == 0:
+                    if len(intermediate_buy_tkns) == 0:
                         continue
                     for intermediate_sell_tkn in intermediate_sell_tkns:
                         for intermediate_buy_tkn in intermediate_buy_tkns:
@@ -289,6 +291,8 @@ class OmnipoolRouter(Exchange):
     def swap(self, agent, tkn_buy, tkn_sell, buy_quantity: float = None, sell_quantity: float = None):
         """Does swap along whatever route has best spot price"""
         route = self.find_best_route(tkn_buy, tkn_sell, sell_quantity=sell_quantity, buy_quantity=buy_quantity)
+        if len(route) == 0:
+            return self.fail_transaction(f'No route found for {tkn_buy} to {tkn_sell}')
         return self.swap_route(
             agent=agent,
             route=route,
