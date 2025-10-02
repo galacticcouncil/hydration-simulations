@@ -593,6 +593,83 @@ def get_current_omnipool(block_number = None):
     return omnipool
 
 
+def get_omnipool_trades(
+    asset_info: dict[str: AssetInfo] = None,
+    min_block: int = None,
+    max_block: int = None
+):
+    if asset_info and isinstance(list(asset_info.keys())[0], int):
+        raise TypeError("Asset info keys must be str.")
+
+    if asset_info is None:
+        asset_info = get_asset_info_by_ids()
+
+    url = URL_UNIFIED_PROD
+
+    query = f"""
+        query OmnipoolTransactionQuery($first: Int!, $after: Cursor) {{
+            events(
+                first: $first,
+                after: $after,
+                orderBy: PARA_BLOCK_HEIGHT_ASC,
+                filter: {{
+                    name: {{includes: "Omnipool"}}, 
+                    paraBlockHeight: {{
+                        greaterThanOrEqualTo: {min_block}, 
+                        lessThanOrEqualTo: {max_block}
+                    }}
+                }}
+            ) {{
+                nodes {{
+                  name
+                  args
+                  id
+                  paraBlockHeight
+                }}
+                pageInfo {{
+                    endCursor
+                    hasNextPage
+                }}
+            }}
+        }}
+    """
+    data_all = []
+    has_next_page = True
+    after_cursor = None
+    page_size = 10000
+    variables = {"first": page_size}
+
+    while has_next_page:
+        variables["after"] = after_cursor
+        data = query_indexer(URL_UNIFIED_PROD, query, variables)
+        page_data = data['data']['events']['nodes']
+        data_all.extend(page_data)
+        page_info = data['data']['events']['pageInfo']
+        has_next_page = page_info['hasNextPage']
+        after_cursor = page_info['endCursor']
+
+    for trade in data_all:
+        args = {
+            arg[:arg.index(':')].strip('"'): arg[arg.index(':') + 1:].strip('"')
+            for arg in trade['args'].strip('}').strip('{').split(',')
+        }
+        trade.pop("args")
+        trade.update(args)
+        sell_id = args['assetIn']
+        buy_id = args['assetOut']
+        tkn_sell = asset_info[sell_id] if sell_id in asset_info else None
+        tkn_buy = asset_info[buy_id] if buy_id in asset_info else None
+        trade['assetIn'] = tkn_sell.name if tkn_sell.asset_type == "StableSwap" else tkn_sell.symbol
+        trade['assetOut'] = tkn_buy.name if tkn_buy.asset_type == "StableSwap" else tkn_buy.symbol
+        trade['amountIn'] = int(args['amountIn']) / (10 ** tkn_sell.decimals) if tkn_sell else None
+        trade['amountOut'] = int(args['amountOut']) / (10 ** tkn_buy.decimals) if tkn_buy else None
+        trade['protocolFeeAmount'] = int(args['protocolFeeAmount']) / (10 ** asset_info['1'].decimals)
+        trade['assetFeeAmount'] = int(args['assetFeeAmount']) / (10 ** tkn_buy.decimals) if tkn_buy else None
+        trade['hubAmountOut'] = int(args['hubAmountOut']) / (10 ** asset_info['1'].decimals)
+        trade['hubAmountIn'] = int(args['hubAmountIn']) / (10 ** asset_info['1'].decimals)
+        trade['block_number'] = trade.pop('paraBlockHeight')
+    return data_all
+
 def get_current_omnipool_fees(
     asset_info: dict[str: AssetInfo] = None,
     block_number: int = None
@@ -651,28 +728,29 @@ def get_current_omnipool_fees(
             }}
         """
         transaction_data = query_indexer(url, query)['data']['events']['nodes']
+
         for trade in transaction_data:
             args = {
                 arg[:arg.index(':')].strip('"'): arg[arg.index(':') + 1:].strip('"')
                 for arg in trade['args'].strip('}').strip('{').split(',')
             }
             block = trade['paraBlockHeight']
-            sell_id = int(args['assetIn'])
-            buy_id = int(args['assetOut'])
+            sell_id = args['assetIn']
+            buy_id = args['assetOut']
             tkn_sell = asset_info[sell_id] if sell_id in asset_info else None
             tkn_buy = asset_info[buy_id] if buy_id in asset_info else None
-            if tkn_sell and int(tkn_sell.id) in asset_ids_remaining:
+            if tkn_sell and tkn_sell.id in asset_ids_remaining:
                 if tkn_sell.symbol not in lrna_fee.current and float(args['hubAmountOut']) > 0:
                     lrna_fee.current[tkn_sell.symbol] = float(args['protocolFeeAmount']) / float(args['hubAmountOut'])
                     lrna_fee.last_updated[tkn_sell.symbol] = block
-                    if tkn_sell.symbol in asset_fee.current:
-                        asset_ids_remaining.remove(int(args['assetIn']))
-            if tkn_buy and int(tkn_buy.id) in asset_ids_remaining:
+                    if args['assetIn'] in asset_fee.current:
+                        asset_ids_remaining.remove(args['assetIn'])
+            if tkn_buy and tkn_buy.id in asset_ids_remaining:
                 if tkn_buy.symbol not in asset_fee.current and float(args['amountIn']) > 0:
                     asset_fee.current[tkn_buy.symbol] = float(args['assetFeeAmount']) / (float(args['amountOut']) + float(args['assetFeeAmount']))
                     asset_fee.last_updated[tkn_buy.symbol] = block
                     if tkn_buy.symbol in lrna_fee.current:
-                        asset_ids_remaining.remove(int(args['assetOut']))
+                        asset_ids_remaining.remove(args['assetOut'])
 
         queries += 1
         current_block -= blocks_per_query
