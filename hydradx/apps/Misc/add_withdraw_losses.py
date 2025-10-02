@@ -6,12 +6,16 @@ import copy
 import pytest
 import numpy as np
 
+from hydradx.apps.hollar.hsm import buy_price
+
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../"))
 sys.path.append(project_root)
 
 from hydradx.model.amm.omnipool_amm import OmnipoolState
 from hydradx.model.amm.agents import Agent
 from hydradx.model.plot_utils import color_gradient
+from hydradx.model.indexer_utils import get_current_omnipool, get_omnipool_trades, get_current_omnipool_assets, \
+    get_asset_info_by_ids
 
 st.markdown("""
     <style>
@@ -411,6 +415,79 @@ def scenario_3():
     ax.set_ylabel('LP loss as a percent of deposit')
     ax.legend()
     st.pyplot(fig)
-    
-    
-scenario_3()
+
+
+def scenario_4(block_number=None):
+    max_block_number = 9300000  # get_current_block_height() - 1000
+    block_number = st.number_input(
+        'block number:', min_value=1, max_value=max_block_number, value=block_number or 9_000_000
+    )
+    trades = get_omnipool_trades(
+        min_block=block_number, max_block=block_number + 1000
+    )
+    pass
+    initial_omnipool = get_current_omnipool(block_number)
+    trade_agent_1 = Agent(enforce_holdings=False, unique_id="trader1")
+    trade_agent_2 = Agent(enforce_holdings=False, unique_id="trader2")
+    initial_lp_agent = Agent(holdings={"HDX": initial_omnipool.liquidity['HDX'] / 4})
+    initial_omnipool.liquidity["HDX"] *= 3/4
+    initial_omnipool.lrna["HDX"] *= 3/4
+    initial_omnipool.add_liquidity(
+        agent=initial_lp_agent,
+        tkn_add='HDX',
+        quantity=initial_lp_agent.holdings['HDX']
+    )
+    lp_agent_1 = initial_lp_agent.copy()  # agent now holds 25% of the pool
+    lp_agent_2 = initial_lp_agent.copy()
+    lp_agent_1.unique_id = "lp1"
+    lp_agent_2.unique_id = "lp2"
+    omnipool1 = initial_omnipool.copy()
+    omnipool2 = initial_omnipool.copy()
+    events = []
+    fails = []
+    divergence = {pool.unique_id: {tkn: {} for tkn in omnipool1.liquidity.keys()} for pool in (omnipool1, omnipool2)}
+    next_trade = trades.pop(0)
+    for block in range(block_number, block_number + 1000):
+        while next_trade and next_trade['block_number'] == block:
+            trade = next_trade
+            next_trade = trades.pop(0) if trades else None
+            tkn_sell = trade['assetIn']
+            tkn_buy = trade['assetOut']
+            if tkn_buy == "H2O":
+                tkn_buy = "LRNA"
+            if tkn_sell == "H2O":
+                tkn_sell = "LRNA"
+            for omnipool, trade_agent in [(omnipool1, trade_agent_1), (omnipool2, trade_agent_2)]:
+                omnipool.fail = ""
+                agent_start_holdings = trade_agent.get_holdings(tkn_buy)
+                omnipool.swap(
+                    agent=trade_agent,
+                    tkn_buy=tkn_buy,
+                    tkn_sell=tkn_sell,
+                    sell_quantity=trade['amountIn']
+                )
+                buy_quantity = trade_agent.get_holdings(tkn_buy) - agent_start_holdings
+                divergence[omnipool.unique_id][tkn_buy][block] = abs(buy_quantity - trade['amountOut']) / trade['amountOut']
+                if omnipool.fail:
+                    fails.append((omnipool.unique_id, trade))
+
+        remove_readd(omnipool1, lp_agent_1)
+        if omnipool2.current_withdrawal_fee == omnipool2.min_withdrawal_fee:
+            remove_readd(omnipool2, lp_agent_2)
+        events.append({
+            'pools': {pool.unique_id: pool.copy() for pool in (omnipool1, omnipool2)},
+            'agents': {agent.unique_id: agent.copy() for agent in (lp_agent_1, lp_agent_2, trade_agent_1, trade_agent_2)},
+            'block': block
+        })
+        pass
+    fig, ax = plt.subplots(figsize=(16, 7))
+    ax.plot([e['block'] for e in events], [e['agents']['lp1'].get_holdings('HDX') for e in events], label='LP1 HDX')
+    ax.plot([e['block'] for e in events], [e['agents']['lp2'].get_holdings('HDX') for e in events], label='LP1 HDX')
+    ax.legend()
+    st.pyplot(fig)
+    fig2, ax2 = plt.subplots(figsize=(16, 7))
+    for tkn in divergence:
+        ax2.plot(list(divergence[tkn].keys()), list(divergence[tkn].values()), label=tkn)
+    ax.legend()
+    st.pyplot(fig2)
+    pass
