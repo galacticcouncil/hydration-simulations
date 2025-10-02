@@ -51,7 +51,7 @@ print("App start")
 
 @st.cache_data(ttl=3600, show_spinner="Loading Omnipool data (cached for 1 hour)...")
 def load_omnipool_router() -> tuple[OmnipoolRouter, str]:
-    block_number = 9290000
+    block_number = None
     # Add timestamp to verify caching
     import datetime
     cache_time = datetime.datetime.now().strftime("%H:%M:%S")
@@ -107,6 +107,7 @@ def distribute_cdps(
         money_market: MoneyMarket,
         extra_collateral: dict[str, float],
         extra_debt: dict[str, float],
+        num_cdps: int
 ) -> list[CDP]:
     """
     Create new CDPs to distribute the added collateral and debt
@@ -131,8 +132,6 @@ def distribute_cdps(
             ),
         ]
     else:
-        num_cdps = 20
-
         # check the liquidation threshold of the collateral and debt assets
         # we'll set the health factor of the first CDP right above this threshold.
         liquidation_threshold = money_market.cdp_liquidation_threshold(CDP(
@@ -167,7 +166,8 @@ def distribute_cdps(
             )
             collateral_remaining -= money_market.value_assets(new_cdps[-1].collateral)
             debt_remaining -= money_market.value_assets(new_cdps[-1].debt)
-            cdp_collateral_ratio = max((cdp_collateral_ratio * 4 + collateral_remaining / debt_remaining) / 5, 1)
+            cdp_collateral_ratio = (cdp_collateral_ratio * (num_cdps - i - 1) + collateral_remaining / debt_remaining) / (num_cdps - i)
+
 
         # correct rounding errors in the last CDP
         collateral_distributed = {
@@ -221,7 +221,8 @@ def rebuild_money_market():
     new_mm.add_cdps(distribute_cdps(
         extra_collateral=st.session_state.get("add_collateral", {}),
         extra_debt=st.session_state.get("add_debt", {}),
-        money_market=new_mm
+        money_market=new_mm,
+        num_cdps=st.session_state.get("number_of_cdps", 20)
     ))
     st.session_state.refresh_graphs = True
     return new_mm
@@ -308,13 +309,14 @@ for exchange in initial_stableswaps:
                 start_price[tkn] = exchange.price(tkn, start_price[priced_tokens[0]]) * start_price[priced_tokens[0]]
 
 st.session_state.setdefault("time_steps", 20)
-st.session_state.setdefault("include_original_cdps", False)
+st.session_state.setdefault("include_original_cdps", True)
 st.session_state.setdefault("resolution", 20)
 st.session_state.setdefault("add_collateral", {"HDX": 1_000_000})
 st.session_state.setdefault("add_debt", {"USDT": 600_000})
 st.session_state.setdefault("price_change", {
     "HDX": -20
 })
+st.session_state.setdefault("number_of_cdps", 20)
 st.session_state.setdefault("assets", [asset.copy() for asset in initial_mm.assets.values()])
 if "money_market" not in st.session_state:
     for asset in st.session_state.get("assets", []):
@@ -332,7 +334,7 @@ with st.sidebar:
         with input_col:
             st.session_state["time_steps"] = st.number_input(
                 label="time steps",
-                min_value=1,
+                min_value=2,
                 max_value=100,
                 value=st.session_state["time_steps"],
                 label_visibility="collapsed"
@@ -362,7 +364,8 @@ with st.sidebar:
             if asset_to_delete is not None:
                 st.session_state[key].pop(asset_to_delete, None)
                 on_change()
-            with st.expander(title, expanded=expanded):
+            expander_section = st.expander(title, expanded=expanded)
+            with expander_section:
                 with st.form(f"{key}_change_form", border=False):
                     if number_format == "$":
                         label_column, dollar_column, input_column = st.columns([12, 1, 8], vertical_alignment="center")
@@ -416,6 +419,7 @@ with st.sidebar:
                             key=f"del_{key}_{asset}",
                             on_click=lambda asset=asset, flag=delete_flag: set_delete_flag(asset, flag),
                         )
+            return expander_section
 
         def show_asset_config(asset: MoneyMarketAsset, title: str=None):
             name = asset.name
@@ -562,24 +566,41 @@ with st.sidebar:
             expanded=True
         )
 
-        change_param_form(
+        with change_param_form(
             key="add_collateral",
             title="Add collateral",
             tokens=st.session_state["money_market"].asset_list,
             default_token="HDX",
-            default_value=3_000_000,
+            default_value=1_000_000,
             min_value=-1_000_000_000,
             max_value=1_000_000_000,
             on_change=lambda: st.session_state.__setitem__("asset_changed", True),
             number_format="$",
             expanded=True
-        )
+        ):
+            st.checkbox("include original CDPs", key="include_original_cdps", on_change=rebuild_money_market)
+            if st.session_state.get("add_collateral", {}) != {}:
+                column1, column2, column3 = st.columns([2, 1, 1], vertical_alignment="center")
+                with column1:
+                    st.write("Distribute over:")
+                with column2:
+                    st.number_input(
+                        label="Number of new CDPs to create",
+                        min_value=1,
+                        max_value=100,
+                        key="number_of_cdps",
+                        on_change=lambda: st.session_state.__setitem__("asset_changed", True),
+                        label_visibility="collapsed"
+                    )
+                with column3:
+                    st.write("CDPs")
+
         change_param_form(
             key="add_debt",
             title="Add debt",
             tokens=st.session_state["money_market"].asset_list,
             default_token="USDT",
-            default_value=1_800_000,
+            default_value=600_000,
             min_value=-1_000_000_000,
             max_value=1_000_000_000,
             on_change=lambda: st.session_state.__setitem__("asset_changed", True),
@@ -592,6 +613,75 @@ with st.sidebar:
             st.session_state["asset_changed"] = False
 
     sidebar_builder()
+
+
+@st.fragment
+def plot_health_factor_distribution(mm):
+    with st.expander("CDP Health Factor Distribution"):
+
+        res_column, graph_by_column = st.columns([1, 1])
+        with res_column:
+            resolution = st.radio(
+                label="distribution resolution:",
+                options=["low", "high"],
+                key=f"resolution {mm.time_step}"
+            )
+        with graph_by_column:
+            graph_by = st.radio(
+                label="Graph health factor distribution by:",
+                options=["debt", "collateral"],
+                index=1,
+                key=f"graph by {mm.time_step}"
+            )
+
+        cdps = mm.cdps
+        health_factors = [cdp.health_factor for cdp in cdps]
+        fig, ax = plt.subplots(figsize=(16, 6))
+
+        if resolution == "low":
+            smoothing = 3.0
+            bins, dist = get_distribution(
+                health_factors,
+                [mm.value_assets(cdp.debt) for cdp in cdps] if graph_by == "debt" else [mm.value_assets(cdp.collateral) for cdp in cdps],
+                resolution=20,
+                minimum=min(1, min(health_factors)),
+                maximum=2,
+                smoothing=smoothing
+            )
+            ax.plot(bins, dist, label="Health Factor Distribution")
+            ax.set_xlabel("Health Factor")
+            ax.set_ylabel("Debt-weighted density" if graph_by == "debt" else "Collateral-weighted density")
+        else:
+            bins, dist = get_distribution(
+                health_factors,
+                [mm.value_assets(cdp.debt) for cdp in cdps] if graph_by == "debt" else [mm.value_assets(cdp.collateral) for cdp in cdps],
+                resolution=200,
+                minimum=min(1, min(health_factors)),
+                maximum=2,
+                smoothing=1.0
+            )
+            ax.set_xlabel("Health Factor")
+            ax.set_ylabel("collateral")
+            ax.plot(bins, dist, label="Health Factor Distribution")
+            ok_cdps = []
+            toxic_cdps = []
+            for cdp in cdps:
+                if mm.is_toxic(cdp):
+                    toxic_cdps.append(cdp)
+                else:
+                    ok_cdps.append(cdp)
+
+            for cdp in ok_cdps:
+                if graph_by == "debt":
+                    plt.scatter(x=cdp.health_factor, y=mm.value_assets(cdp.debt), color='#009', alpha=0.1)
+                else:
+                    plt.scatter(x=cdp.health_factor, y=mm.value_assets(cdp.collateral), color='#009', alpha=0.1)
+            for cdp in toxic_cdps:
+                if graph_by == "debt":
+                    plt.scatter(x=cdp.health_factor, y=mm.value_assets(cdp.debt), color='#F00', alpha=0.5, marker="x")
+                else:
+                    plt.scatter(x=cdp.health_factor, y=mm.value_assets(cdp.collateral), color='#F00', alpha=0.5, marker="x")
+        st.pyplot(fig)
 
 def run_app():
     price_factor = {
@@ -610,13 +700,13 @@ def run_app():
             relevant_pools = [pool for pool in state.pools['router'].exchanges.values() if price_tkn in pool.asset_list]
             if price_tkn == "HDX":
                 # there is no external market for HDX, so we set the price in the money market to the omnipool price
-                price_paths[price_tkn][state.time_step - 1] = state.pools['router'].exchanges['omnipool'].usd_price('HDX')
+                price_paths[price_tkn][state.time_step] = state.pools['router'].exchanges['omnipool'].usd_price('HDX')
             for pool in relevant_pools:
                 if isinstance(pool, FixedPriceExchange):
-                    pool.prices[price_tkn] = price_paths[price_tkn][state.time_step - 1]
+                    pool.prices[price_tkn] = price_paths[price_tkn][state.time_step]
                 elif isinstance(pool, MoneyMarket):
-                    pool.assets[price_tkn].price = price_paths[price_tkn][state.time_step - 1]
-                    pool.prices[price_tkn] = price_paths[price_tkn][state.time_step - 1]
+                    pool.assets[price_tkn].price = price_paths[price_tkn][state.time_step]
+                    pool.prices[price_tkn] = price_paths[price_tkn][state.time_step]
                 # elif isinstance(pool, OmnipoolState):
                 #     # execute trades to move price towards target
                 #     target_price = price_paths[price_tkn][state.time_step - 1] * pool.lrna_price('USD')
@@ -634,9 +724,8 @@ def run_app():
             for i in range(time_steps)
         ] + [final_price[tkn]] for tkn in start_price
     }
-    time_steps += 1  # to account for final, stable price step
-
     lrna_price_usd = initial_omnipool.lrna_price('USD')
+    time_steps += 1
     omnipool_swap_quantities = {
         tkn: [
             initial_omnipool.calculate_trade_to_price(tkn=tkn, target_price=price_paths[tkn][i] * lrna_price_usd)
@@ -693,15 +782,25 @@ def run_app():
 
     with st.spinner(f"Running {time_steps} simulation steps..."):
         sim_start = time.time()
-        events = run(initial_state, time_steps=time_steps, silent=True)
-
-        while max([
-            abs(events[-1].pools['router'].price(tkn, 'USD') - events[-2].pools['router'].price(tkn, 'USD'))
-            for tkn in router.asset_list
-        ]) > 0.01:
-            events.extend(run(events[-1], time_steps=1, silent=True))
-
-
+        new_state = initial_state.copy()
+        events = []
+        while new_state.time_step < time_steps:
+            new_state.time_step += 1
+            agent_ids = list(new_state.agents.keys())
+            for agent_id in agent_ids:
+                new_state.agents[agent_id].trade_strategy.execute(new_state, agent_id)
+            for pool in new_state.pools['router'].exchanges.values():
+                pool.update()
+            update_prices(new_state)
+            events.append(new_state.archive())
+            if new_state.time_step >= time_steps and max([
+                abs(events[-1].pools['router'].price(tkn, 'USD') - events[-2].pools['router'].price(tkn, 'USD'))
+                / (events[-2].pools['router'].price(tkn, 'USD') or 1)
+                for tkn in router.asset_list
+            ]) > 0.001:
+                time_steps += 1  # extend simulation if prices are still changing significantly
+                print(f"extending simulation to {time_steps} steps")
+        events.pop()  # drop the last one because we know the prices didn't change much
         sim_time = time.time() - sim_start
         st.sidebar.info(f"Simulation completed in {sim_time:.2f} seconds")
     st.header("Simulation Results")
@@ -977,53 +1076,20 @@ def run_app():
     hdx_change = sum(final_hdx.values()) - sum(initial_hdx.values())
     pass
 
+    plot_health_factor_distribution(events[-1].pools['money_market'])
+
 col1, col2, col3 = st.columns([1, 2, 1])
 with col2:
     if st.button("Run simulation", use_container_width=True):
         st.session_state.run_simulation = True
 
 if st.session_state.refresh_graphs:
-    def plot_health_factor_distribution():
-        mm = st.session_state["money_market"]
-        with st.expander("CDP Health Factor Distribution"):
-
-            resolution = st.slider(
-                label="Resolution", min_value=20, max_value=500, step=10, key="resolution"
-            )
-            smoothing = max(0, min(400 / resolution - 1, 3.0))
-            graph_by = st.radio(
-                label="Graph health factor distribution by:",
-                options=["debt", "collateral"],
-                index=1,
-                key="health_factor_graph_by"
-            )
-
-            cdps = mm.cdps
-            health_factors = [cdp.health_factor for cdp in cdps]
-            bins, dist = get_distribution(
-                health_factors,
-                [mm.value_assets(cdp.debt) for cdp in cdps] if graph_by == "debt" else [mm.value_assets(cdp.collateral) for cdp in cdps],
-                resolution=resolution,
-                minimum=min(1, min(health_factors)),
-                maximum=2,
-                smoothing=smoothing
-            )
-
-            # Plot
-            fig, ax = plt.subplots(figsize=(16, 6))
-            ax.plot(bins, dist, label="Health Factor Distribution")
-            ax.set_xlabel("Health Factor")
-            ax.set_ylabel("Debt-weighted density" if graph_by == "debt" else "Collateral-weighted density")
-            st.pyplot(fig)
-
-
-    plot_health_factor_distribution()
+    plot_health_factor_distribution(st.session_state["money_market"])
 
 
     def plot_cdp_value_distribution():
         mm = st.session_state["money_market"]
         with st.expander(f"Debt and collateral token amounts"):
-            st.checkbox("include original CDPs", key="include_original_cdps", on_change=rebuild_money_market)
             total_debt = {tkn: sum([cdp.debt[tkn] for cdp in mm.cdps if tkn in cdp.debt]) for tkn in mm.borrowed}
             total_collateral = {tkn: sum([cdp.collateral[tkn] for cdp in mm.cdps if tkn in cdp.collateral]) for tkn in mm.asset_list}
             debt_values_usd = {tkn: total_debt[tkn] * mm.assets[tkn].price for tkn in total_debt}
