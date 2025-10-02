@@ -46,6 +46,7 @@ class DynamicFee:
 
 class OmnipoolState(Exchange):
     unique_id: str = 'omnipool'
+    current_withdrawal_fee: float = 0
 
     def __init__(self,
                  tokens: dict[str: dict],
@@ -113,6 +114,7 @@ class OmnipoolState(Exchange):
 
         if withdrawal_fee:
             self.min_withdrawal_fee = min_withdrawal_fee
+            self.current_withdrawal_fee = min_withdrawal_fee
 
         self.oracles = {}
         self.asset_list = ['LRNA']
@@ -834,6 +836,7 @@ class OmnipoolState(Exchange):
             # calculate withdraw fee
             diff = abs(self.oracles['price'].price[tkn_remove] - piq) / self.oracles['price'].price[tkn_remove]
             fee = max(min(diff, 1), self.min_withdrawal_fee)
+            self.current_withdrawal_fee = fee
 
             delta_r *= 1 - fee
             delta_qa *= 1 - fee
