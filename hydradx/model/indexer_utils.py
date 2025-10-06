@@ -4,6 +4,7 @@ import requests
 from hydradx.model.amm.omnipool_amm import OmnipoolState, DynamicFee
 from hydradx.model.amm.omnipool_router import OmnipoolRouter
 from hydradx.model.amm.stableswap_amm import StableSwapPoolState
+import hydradx.model.production_settings as settings
 
 
 URL_UNIFIED_PROD = 'https://galacticcouncil.squids.live/hydration-pools:unified-prod/api/graphql'
@@ -535,21 +536,15 @@ def get_current_stableswap_pools(block_number):
     return stableswap_pools
 
 
-def get_current_omnipool(block_number = None):
-    asset_info = get_asset_info_by_ids()
-    asset_ids = get_current_omnipool_assets()
-    for asset in asset_info.values():
-        if asset.asset_type == 'StableSwap':
-            asset.symbol = asset.name
-    max_block = get_current_block_height() if block_number is None else block_number
-    asset_ids_remaining = asset_ids.copy()
+def get_omnipool_liquidity(block_number: int = None, assets: dict[str: AssetInfo] = None, max_queries: int = 10):
+    asset_info = assets if assets else get_asset_info_by_ids()
+    asset_ids_remaining = [asset.id for asset in assets] if assets else get_current_omnipool_assets()
     liquidity = {}
     lrna = {}
     shares = {}
     protocol_shares = {}
-    current_block = max_block
+    current_block = get_current_block_height() if block_number is None else block_number
     blocks_per_query = 100
-    max_queries = 10
     queries = 0
     while asset_ids_remaining and queries < max_queries:
         omnipool_data = get_omnipool_asset_data(
@@ -559,18 +554,31 @@ def get_current_omnipool(block_number = None):
         )
         for item in reversed(omnipool_data):
             asset = asset_info[str(item['assetId'])]
-            if asset.symbol not in liquidity:
-                liquidity[asset.symbol] = int(item['balances']['d'][0]) / 10 ** asset.decimals
-                lrna[asset.symbol] = int(item['assetState']['d'][0]) / 10 ** asset_info['1'].decimals
-                shares[asset.symbol] = int(item['assetState']['d'][1]) / 10 ** asset.decimals
-                protocol_shares[asset.symbol] = int(item['assetState']['d'][2]) / 10 ** asset.decimals
+            if asset.unique_id not in liquidity:
+                liquidity[asset.unique_id] = int(item['balances']['d'][0]) / 10 ** asset.decimals
+                lrna[asset.unique_id] = int(item['assetState']['d'][0]) / 10 ** asset_info['1'].decimals
+                shares[asset.unique_id] = int(item['assetState']['d'][1]) / 10 ** asset.decimals
+                protocol_shares[asset.unique_id] = int(item['assetState']['d'][2]) / 10 ** asset.decimals
                 asset_ids_remaining.remove(asset.id)
         current_block -= blocks_per_query
         queries += 1
 
     for tkn in asset_ids_remaining:
         print(f"{asset_info[tkn].name} not found in {blocks_per_query * max_queries} blocks.")
-        asset_ids.remove(tkn)
+
+    return {tkn: {
+        liquidity: liquidity[tkn] if tkn in liquidity else 0,
+        lrna: lrna[tkn] if tkn in lrna else 0,
+        shares: shares[tkn] if tkn in shares else 0,
+        protocol_shares: protocol_shares[tkn] if tkn in protocol_shares else 0,
+    } for tkn in liquidity}
+
+
+def get_current_omnipool(block_number = None):
+    asset_ids = get_current_omnipool_assets()
+    asset_info = get_asset_info_by_ids(asset_ids)
+    max_block = get_current_block_height() if block_number is None else block_number
+    liquidity_data = get_omnipool_liquidity(block_number=max_block, assets=asset_info)
 
     asset_fee, lrna_fee = get_current_omnipool_fees(
         asset_info={tkn: asset_info[tkn] for tkn in asset_ids},
@@ -578,14 +586,7 @@ def get_current_omnipool(block_number = None):
     )
 
     omnipool = OmnipoolState(
-        tokens={
-            tkn: {
-                'liquidity': liquidity[tkn],
-                'LRNA': lrna[tkn],
-                'shares': shares[tkn],
-                'protocol_shares': protocol_shares[tkn],
-            } for tkn in liquidity
-        },
+        tokens=liquidity_data,
         asset_fee=asset_fee,
         lrna_fee=lrna_fee
     )
@@ -683,18 +684,9 @@ def get_current_omnipool_fees(
     if asset_info is None:
         asset_info = get_asset_info_by_ids(get_current_omnipool_assets())
 
-    asset_fee = DynamicFee(
-        minimum=0.0025,
-        maximum=0.05,
-        amplification=2,
-        decay=0.00001
-    )
-    lrna_fee = DynamicFee(
-        minimum=0.0005,
-        maximum=0.001,
-        amplification=1,
-        decay=0.000005
-    )
+    asset_fee = settings.omnipool_asset_fee
+    lrna_fee = settings.omnipool_lrna_fee
+
     blocks_per_query = 100
     max_queries = int(max(
         (lrna_fee.maximum - lrna_fee.minimum) / lrna_fee.decay,
