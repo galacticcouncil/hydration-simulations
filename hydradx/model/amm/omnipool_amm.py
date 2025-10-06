@@ -11,7 +11,7 @@ class AssetFeeCallable(Protocol):
 
 
 class DynamicFee:
-
+    current: dict[str: float]
     def __init__(
         self,
         minimum: float = 0,
@@ -46,21 +46,21 @@ class DynamicFee:
 
 class OmnipoolState(Exchange):
     unique_id: str = 'omnipool'
-    current_withdrawal_fee: float = 0
+    current_withdrawal_fee: dict[str: float] = {}
 
     def __init__(self,
                  tokens: dict[str: dict],
                  tvl_cap: float = float('inf'),
                  preferred_stablecoin: str = None,
-                 asset_fee: dict or DynamicFee or float = 0,
-                 lrna_fee: dict or DynamicFee or float = 0,
+                 asset_fee: dict or DynamicFee or float = 0.0,
+                 lrna_fee: dict or DynamicFee or float = 0.0,
                  oracles: dict[str: int] = None,
                  trade_limit_per_block: float = float('inf'),
                  update_function: Callable = None,
                  last_oracle_values: dict = None,
                  max_withdrawal_per_block: float = 1,
                  max_lp_per_block: float = float('inf'),
-                 remove_liquidity_volatility_threshold: float = 0,
+                 remove_liquidity_volatility_threshold: float = 0.0,
                  withdrawal_fee: bool = True,
                  min_withdrawal_fee: float = 0.0001,
                  lrna_mint_pct: float = 1.0,
@@ -111,11 +111,6 @@ class OmnipoolState(Exchange):
         self.remove_liquidity_volatility_threshold = remove_liquidity_volatility_threshold
         self.lrna_mint_pct = lrna_mint_pct
         self.withdrawal_fee = withdrawal_fee
-
-        if withdrawal_fee:
-            self.min_withdrawal_fee = min_withdrawal_fee
-            self.current_withdrawal_fee = min_withdrawal_fee
-
         self.oracles = {}
         self.asset_list = ['LRNA']
 
@@ -159,6 +154,10 @@ class OmnipoolState(Exchange):
                 name: Oracle(sma_equivalent_length=period, first_block=Block(self))
                 for name, period in oracles.items()
             })
+
+        if withdrawal_fee:
+            self.min_withdrawal_fee = min_withdrawal_fee
+            self.current_withdrawal_fee = {tkn: min_withdrawal_fee for tkn in self.liquidity}
 
         # trades per block cannot exceed this fraction of the pool's liquidity
         self.trade_limit_per_block = trade_limit_per_block
@@ -231,6 +230,12 @@ class OmnipoolState(Exchange):
     def lrna_fee(self, value: DynamicFee or dict or float):
         self._lrna_fee = self._create_dynamic_fee(value, 'lrna')
 
+    def set_lrna_fee(self, tkn: str, value: float):
+        if tkn not in self._lrna_fee.current:
+            raise ValueError(f'Token {tkn} not in pool')
+        self._lrna_fee.current[tkn] = value
+        self._lrna_fee.last_updated[tkn] = self.time_step
+
     def _get_lrna_fee(self, tkn):
         return self.compute_dynamic_fee(
             fee=self._lrna_fee,
@@ -248,6 +253,12 @@ class OmnipoolState(Exchange):
     @asset_fee.setter
     def asset_fee(self, value):
         self._asset_fee = self._create_dynamic_fee(value, 'asset')
+
+    def set_asset_fee(self, tkn: str, value: float):
+        if tkn not in self._asset_fee.current:
+            raise ValueError(f'Token {tkn} not in pool')
+        self._asset_fee.current[tkn] = value
+        self._asset_fee.last_updated[tkn] = self.time_step
 
     def _get_asset_fee(self, tkn):
         return self.compute_dynamic_fee(
@@ -746,6 +757,9 @@ class OmnipoolState(Exchange):
                 raise AssertionError('tkn_remove must be specified if nft_id is not provided.')
             else:
                 tkn_remove = agent.nfts[nft_id].tkn
+        reset_withdrawal_fee = self.withdrawal_fee
+        if agent.immune_to_fees:
+            self.withdrawal_fee = False
 
         delta_qa, delta_r, delta_q, delta_s, delta_b, nft_ids = 0, 0, 0, 0, 0, []
         if quantity is not None:
@@ -789,6 +803,8 @@ class OmnipoolState(Exchange):
                     delta_q += dq
                     delta_s += ds
                     delta_b += db
+        if agent.immune_to_fees:
+            self.withdrawal_fee = reset_withdrawal_fee
         return delta_qa, delta_r, delta_q, delta_s, delta_b, nft_ids
 
     def _calculate_remove_one_position(self, quantity, tkn_remove, share_price):
@@ -832,18 +848,17 @@ class OmnipoolState(Exchange):
         else:
             delta_qa = 0
 
-        if hasattr(self, 'withdrawal_fee') and self.withdrawal_fee > 0:
+        if self.withdrawal_fee:
             # calculate withdraw fee
             diff = abs(self.oracles['price'].price[tkn_remove] - piq) / self.oracles['price'].price[tkn_remove]
             fee = max(min(diff, 1), self.min_withdrawal_fee)
-            self.current_withdrawal_fee = fee
+            self.current_withdrawal_fee[tkn_remove] = fee
 
             delta_r *= 1 - fee
             delta_qa *= 1 - fee
             delta_q *= 1 - fee
 
         # L update: LRNA fees to be burned before they will start to accumulate again
-
         return delta_qa, delta_r, delta_q, delta_s, delta_b
 
     def add_liquidity(
