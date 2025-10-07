@@ -187,12 +187,13 @@ def run_sim():
                     # first agent just holds
                     pass
                 if i == 2 or i == 4:
-                    # second agent always removes and re-adds liquidity
+                    # second and fourth agent always remove and re-adds liquidity
                     remove_readd(omnipool, lp_agent)
                 elif (
                     i == 3
-                    and omnipool.asset_fee("HDX") <= initial_omnipool.lrna_fee("HDX")
-                    and omnipool.lrna_fee("HDX") <= initial_omnipool.lrna_fee("HDX")
+                    and omnipool.current_withdrawal_fee("HDX") == omnipool.min_withdrawal_fee
+                    # omnipool.asset_fee("HDX") <= initial_omnipool.lrna_fee("HDX")
+                    # and omnipool.lrna_fee("HDX") <= initial_omnipool.lrna_fee("HDX")
                 ):
                     # third agent only rebalances if fees are low
                     remove_readd(omnipool, lp_agent)
@@ -261,7 +262,7 @@ def plot_scenario():
             with print_columns[i]:
                 gain_loss = round((1 - lp_hold_value[i][-1]) * 100, 4)
                 st.write(f"Scenario {i + 1} final {"losses" if gain_loss < 0 else "gains"}: {abs(gain_loss)}%")
-                st.write(f"Final holdings: {round(events[-1]['agent'].holdings[('omnipool', 'HDX')], 3)} HDX in LP tokens")
+                st.write(f"Final holdings: {round(events[-1]['agent'].holdings[('omnipool', 'HDX')], 3)} in HDX LP tokens")
                 st.write(f"Final cash out value: {round(events[-1]['pool'].cash_out(events[-1]['agent']), 3)}")
                 st.write(f"Final HDX price: {round(events[-1]['pool'].lrna_price('HDX'), 9)}")
                 st.write(f"Final H2O/liquidity in HDX pool: {round(events[-1]['pool'].lrna['HDX'], 3)}/{round(events[-1]['pool'].liquidity['HDX'], 3)}")
