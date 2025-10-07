@@ -33,6 +33,10 @@ class AssetInfo:
         self.symbol = symbol
         self.xcm_rate_limit = xcm_rate_limit
 
+    @property
+    def unique_id(self):
+        return self.symbol if self.asset_type != "StableSwap" else self.name
+
 
 def query_indexer(url: str, query: str, variables: dict = None) -> dict:
     response = requests.post(url, json={'query': query, 'variables': variables})
@@ -567,10 +571,10 @@ def get_omnipool_liquidity(block_number: int = None, assets: dict[str: AssetInfo
         print(f"{asset_info[tkn].name} not found in {blocks_per_query * max_queries} blocks.")
 
     return {tkn: {
-        liquidity: liquidity[tkn] if tkn in liquidity else 0,
-        lrna: lrna[tkn] if tkn in lrna else 0,
-        shares: shares[tkn] if tkn in shares else 0,
-        protocol_shares: protocol_shares[tkn] if tkn in protocol_shares else 0,
+        "liquidity": liquidity[tkn] if tkn in liquidity else 0,
+        "LRNA": lrna[tkn] if tkn in lrna else 0,
+        "shares": shares[tkn] if tkn in shares else 0,
+        "protocol_shares": protocol_shares[tkn] if tkn in protocol_shares else 0,
     } for tkn in liquidity}
 
 
@@ -642,7 +646,7 @@ def get_omnipool_trades(
 
     while has_next_page:
         variables["after"] = after_cursor
-        data = query_indexer(URL_UNIFIED_PROD, query, variables)
+        data = query_indexer(url, query, variables)
         page_data = data['data']['events']['nodes']
         data_all.extend(page_data)
         page_info = data['data']['events']['pageInfo']
@@ -658,16 +662,21 @@ def get_omnipool_trades(
         trade.update(args)
         sell_id = args['assetIn']
         buy_id = args['assetOut']
-        tkn_sell = asset_info[sell_id] if sell_id in asset_info else None
-        tkn_buy = asset_info[buy_id] if buy_id in asset_info else None
-        trade['assetIn'] = tkn_sell.name if tkn_sell.asset_type == "StableSwap" else tkn_sell.symbol
-        trade['assetOut'] = tkn_buy.name if tkn_buy.asset_type == "StableSwap" else tkn_buy.symbol
+        tkn_sell = asset_info[sell_id]
+        tkn_buy = asset_info[buy_id]
+        trade['assetIn'] = tkn_sell.unique_id
+        trade['assetOut'] = tkn_buy.unique_id
         trade['amountIn'] = int(args['amountIn']) / (10 ** tkn_sell.decimals) if tkn_sell else None
         trade['amountOut'] = int(args['amountOut']) / (10 ** tkn_buy.decimals) if tkn_buy else None
         trade['protocolFeeAmount'] = int(args['protocolFeeAmount']) / (10 ** asset_info['1'].decimals)
         trade['assetFeeAmount'] = int(args['assetFeeAmount']) / (10 ** tkn_buy.decimals) if tkn_buy else None
         trade['hubAmountOut'] = int(args['hubAmountOut']) / (10 ** asset_info['1'].decimals)
         trade['hubAmountIn'] = int(args['hubAmountIn']) / (10 ** asset_info['1'].decimals)
+        trade['assetFee'] = float(trade['assetFeeAmount']) / (trade['amountOut'] + trade['assetFeeAmount'])
+        if trade['hubAmountOut'] > 0:
+            trade['protocolFee'] = float(trade['protocolFeeAmount']) / trade['hubAmountOut']
+        else:
+            pass
         trade['block_number'] = trade.pop('paraBlockHeight')
     return data_all
 
@@ -833,19 +842,26 @@ def get_executed_trades(min_block: int, max_block: int, asset_ids: list[str] = N
         has_next_page = page_info['hasNextPage']
         after_cursor = page_info['endCursor']
 
-    trade_data = [
-        {
+    trade_data = []
+    for x in data_all:
+        if x['routeTradeOutputs']['nodes'][0]['assetId'] not in asset_info:
+            continue
+        if x['routeTradeInputs']['nodes'][0]['assetId'] not in asset_info:
+            continue
+        node = x['routeTradeInputs']['nodes'][0]
+        next_trade = {
             'block_number': int(x['paraBlockHeight']),
-            'input_asset_id': x['routeTradeInputs']['nodes'][0]['assetId'],
-            'input_amount': int(x['routeTradeInputs']['nodes'][0]['amount']) / (10 ** asset_info[x['routeTradeInputs']['nodes'][0]['assetId']].decimals),
-            'output_asset_id': x['routeTradeOutputs']['nodes'][0]['assetId'],
-            'output_amount': int(x['routeTradeOutputs']['nodes'][0]['amount']) / (10 ** asset_info[x['routeTradeOutputs']['nodes'][0]['assetId']].decimals),
+            'input_asset_id': node['assetId'],
+            'input_amount': int(node['amount']) / (10 ** asset_info[node['assetId']].decimals),
+            'output_asset_id': node['assetId'],
+            'output_amount': int(node['amount']) / (10 ** asset_info[node['assetId']].decimals),
             'all_involved_asset_ids': [y for y in x['allInvolvedAssetIds']]
         }
-        for x in data_all
-        if x['routeTradeOutputs']['nodes'][0]['assetId'] in asset_info
-        and x['routeTradeInputs']['nodes'][0]['assetId'] in asset_info
-    ]
+        if float(node['hubAmountOut']) > 0:
+            next_trade['protocol_fee'] = float(node['protocolFeeAmount']) / float(node['hubAmountOut'])
+        if float(node['amountIn']) > 0:
+            next_trade['asset_fee'] = float(node['assetFeeAmount']) / (float(node['amountOut']) + float(node['assetFeeAmount']))
+        trade_data.append(next_trade)
 
     return trade_data
 
