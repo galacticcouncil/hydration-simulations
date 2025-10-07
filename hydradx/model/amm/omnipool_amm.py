@@ -46,7 +46,6 @@ class DynamicFee:
 
 class OmnipoolState(Exchange):
     unique_id: str = 'omnipool'
-    current_withdrawal_fee: dict[str: float] = {}
 
     def __init__(self,
                  tokens: dict[str: dict],
@@ -157,7 +156,6 @@ class OmnipoolState(Exchange):
 
         if withdrawal_fee:
             self.min_withdrawal_fee = min_withdrawal_fee
-            self.current_withdrawal_fee = {tkn: min_withdrawal_fee for tkn in self.liquidity}
 
         # trades per block cannot exceed this fraction of the pool's liquidity
         self.trade_limit_per_block = trade_limit_per_block
@@ -849,17 +847,18 @@ class OmnipoolState(Exchange):
             delta_qa = 0
 
         if self.withdrawal_fee:
-            # calculate withdraw fee
-            diff = abs(self.oracles['price'].price[tkn_remove] - piq) / self.oracles['price'].price[tkn_remove]
-            fee = max(min(diff, 1), self.min_withdrawal_fee)
-            self.current_withdrawal_fee[tkn_remove] = fee
-
+            fee = self.current_withdrawal_fee(tkn_remove)
             delta_r *= 1 - fee
             delta_qa *= 1 - fee
             delta_q *= 1 - fee
 
         # L update: LRNA fees to be burned before they will start to accumulate again
         return delta_qa, delta_r, delta_q, delta_s, delta_b
+
+    def current_withdrawal_fee(self, tkn):
+        diff = abs(self.oracles['price'].price[tkn] - self.lrna_price(tkn)) / self.oracles['price'].price[tkn]
+        fee = max(min(diff, 1), self.min_withdrawal_fee)
+        return fee
 
     def add_liquidity(
             self,
