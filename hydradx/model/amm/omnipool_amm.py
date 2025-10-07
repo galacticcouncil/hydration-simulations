@@ -194,7 +194,7 @@ class OmnipoolState(Exchange):
                 current={tkn: value.current[tkn] if tkn in value.current else value.minimum for tkn in self.liquidity},
                 liquidity={tkn: value.liquidity_at_last_update[tkn] if tkn in value.liquidity_at_last_update else self.liquidity[tkn] for tkn in self.liquidity},
                 net_volume={tkn: value.volume_at_last_update[tkn] for tkn in self.liquidity} if value.volume_at_last_update else get_last_volume(),
-                last_updated=value.last_updated
+                last_updated={tkn: value.last_updated[tkn] if tkn in value.last_updated else self.time_step for tkn in self.liquidity }
             )
             return return_val
         elif isinstance(value, dict):
@@ -271,9 +271,12 @@ class OmnipoolState(Exchange):
     def compute_dynamic_fee(self, fee: DynamicFee, tkn: str) -> float:
         if fee.amplification == 0:
             fee.last_updated[tkn] = self.time_step
-        if fee.last_updated[tkn] == self.time_step:
-            # return the last fee if it's already been computed for this tkn and block
-            return fee.current[tkn]
+        if tkn in fee.last_updated:
+            if fee.last_updated[tkn] == self.time_step:
+                # return the last fee if it's already been computed for this tkn and block
+                return fee.current[tkn]
+        else:
+            fee.last_updated[tkn] = self.time_step - 1
 
         # use this approximation to catch up to where we think the fee should be,
         # knowing there have been no trades until now
