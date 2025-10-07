@@ -601,3 +601,44 @@ def test_get_hollar_sell_amount(liq_ratio, peg):
         raise ValueError("Agent should have positive USDT holdings after arb")
     if (sell_amount > 0) and ((1 + hsm.sell_price_fee["USDT"]) * peg != pytest.approx(1 / ss.buy_spot(tkn_buy="USDT", tkn_sell="HOLLAR"), rel=1e-15)):
         raise ValueError("arb should make price converge")
+
+
+def test_rebalance():
+    def test_hsm_rebalance():
+        liquidity = {'aUSDT': mpf(2e-06), 'sUSDS': mpf(37646.77909600129), 'sUSDe': mpf(34448.524988323006),
+                     'aUSDC': mpf(382803.657686)}
+        buyback_speed = 0.0000001
+
+        pools_list = []
+
+        peg = 1
+        stable_tokens = {'aUSDT': mpf('462749.517821'), 'HOLLAR': mpf('1083761.886781065')}
+        amp = 222
+        swap_fee = 0.0002
+        ss = StableSwapPoolState(stable_tokens, amp, trade_fee=swap_fee, peg=peg, precision=0.00000001)
+        pools_list.append(ss)
+
+        peg = 1
+        stable_tokens = {'sUSDS': mpf('300371.9121634992'), 'HOLLAR': mpf('457456.8469612452')}
+        amp = 111
+        swap_fee = 0.0004
+        ss = StableSwapPoolState(stable_tokens, amp, trade_fee=swap_fee, peg=peg, precision=0.00000001)
+        pools_list.append(ss)
+
+        peg = 1
+        stable_tokens = {'sUSDe': mpf('306855.16433681524'), 'HOLLAR': mpf('541716.1096157538')}
+        amp = 111
+        swap_fee = 0.0004
+        ss = StableSwapPoolState(stable_tokens, amp, trade_fee=swap_fee, peg=peg, precision=0.00000001)
+        pools_list.append(ss)
+
+        peg = 1
+        stable_tokens = {'aUSDC': mpf('516836.454873'), 'HOLLAR': mpf('1093001.7589157932')}
+        amp = 222
+        swap_fee = 0.0002
+        ss = StableSwapPoolState(stable_tokens, amp, trade_fee=swap_fee, peg=peg, precision=0.00000001)
+        pools_list.append(ss)
+
+        hsm = StabilityModule(liquidity, buyback_speed, pools_list, sell_price_fee=0.)
+
+        hsm.arb()
