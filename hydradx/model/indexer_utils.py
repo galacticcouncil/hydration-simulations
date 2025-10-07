@@ -542,7 +542,11 @@ def get_current_stableswap_pools(block_number):
 
 def get_omnipool_liquidity(block_number: int = None, assets: dict[str: AssetInfo] = None, max_queries: int = 10):
     asset_info = assets if assets else get_asset_info_by_ids()
-    asset_ids_remaining = [asset.id for asset in assets] if assets else get_current_omnipool_assets()
+    asset_ids_remaining = [asset.id for asset in assets.values()] if assets else get_current_omnipool_assets()
+    if '1' not in asset_info:
+        asset_info.update(get_asset_info_by_ids(['1']))  # ensure hub token info is present
+    if '1' in asset_ids_remaining:
+        asset_ids_remaining.remove('1')  # hub token not needed
     liquidity = {}
     lrna = {}
     shares = {}
@@ -580,7 +584,7 @@ def get_omnipool_liquidity(block_number: int = None, assets: dict[str: AssetInfo
 
 def get_current_omnipool(block_number = None):
     asset_ids = get_current_omnipool_assets()
-    asset_info = get_asset_info_by_ids(asset_ids)
+    asset_info = get_asset_info_by_ids(asset_ids + ['1'])
     max_block = get_current_block_height() if block_number is None else block_number
     liquidity_data = get_omnipool_liquidity(block_number=max_block, assets=asset_info)
 
