@@ -4,7 +4,7 @@ from typing import Callable
 import numpy as np
 from matplotlib import pyplot as plt
 import sys, os, math
-import streamlit as st, streamlit.components.v1 as components
+import streamlit as st
 import time
 
 from streamlit import form_submit_button
@@ -15,14 +15,12 @@ sys.path.append(project_root)
 from hydradx.model.amm.global_state import GlobalState
 from hydradx.model.amm.omnipool_router import OmnipoolRouter
 from hydradx.model.amm.money_market import MoneyMarket, MoneyMarketAsset, CDP
-from hydradx.model.amm.omnipool_amm import OmnipoolState
 from hydradx.model.amm.stableswap_amm import StableSwapPoolState
 from hydradx.model.amm.trade_strategies import liquidate_cdps, schedule_swaps, omnipool_arbitrage
 from hydradx.model.processing import get_current_money_market, save_money_market, load_money_market as load_money_market_from_file
 from hydradx.model.amm.agents import Agent
-from hydradx.model.run import run
-from hydradx.model.indexer_utils import get_current_omnipool_router
-from hydradx.apps.display_utils import get_distribution, one_line_markdown, truncated_bell_curve
+from hydradx.model.indexer_utils import get_current_omnipool_router, get_current_block_height
+from hydradx.apps.display_utils import get_distribution, one_line_markdown
 from hydradx.model.amm.fixed_price import FixedPriceExchange
 
 st.markdown("""
@@ -51,7 +49,7 @@ print("App start")
 
 @st.cache_data(ttl=3600, show_spinner="Loading Omnipool data (cached for 1 hour)...")
 def load_omnipool_router() -> tuple[OmnipoolRouter, str]:
-    block_number = None
+    block_number = get_current_block_height() - 10000
     # Add timestamp to verify caching
     import datetime
     cache_time = datetime.datetime.now().strftime("%H:%M:%S")
@@ -712,7 +710,7 @@ def run_app():
                 #     target_price = price_paths[price_tkn][state.time_step - 1] * pool.lrna_price('USD')
                 #     pool.trade_to_price(trade_agent, tkn=price_tkn, target_price=target_price)
 
-            state.external_market[price_tkn] = price_paths[price_tkn][state.time_step - 1]
+            state.external_market[price_tkn] = price_paths[price_tkn][state.time_step]
 
     time_steps = st.session_state["time_steps"]
     # calculate price path from start price to final price
@@ -764,17 +762,10 @@ def run_app():
                 enforce_holdings=False,
                 trade_strategy=omnipool_arbitrage(
                     pool_id='omnipool',
-                    skip_assets=[asset for asset in st.session_state["money_market"].asset_list if asset not in omnipool.liquidity] + ['HDX'],
+                    arb_precision=20,
+                    skip_assets=['HDX'],
                 )
             )
-            # 'arbitrageur': Agent(
-            #     enforce_holdings=False,
-            #     trade_strategy=general_arbitrage(
-            #         exchanges=[omnipool_sim, mm_sim, *stableswap_sims],
-            #         # config=config_list,
-            #         equivalency_map=equivalency_map
-            #     )
-            # )
         },
         evolve_function=update_prices,
         external_market=start_price
@@ -826,7 +817,8 @@ def run_app():
                 if tkn in event.pools['omnipool'].asset_list
                 else event.pools['money_market'].price(tkn)
                 if tkn in event.pools['money_market'].asset_list
-                else event.pools['router'].price(tkn, 'USD') if tkn in event.pools['router'].asset_list
+                else event.pools['router'].price_route(events[0].pools['router'].find_best_route(tkn, 'USD'), 'sell')
+                if tkn in event.pools['router'].asset_list
                 else price_paths[tkn][i] if i < len(price_paths[tkn])
                 else price_paths[tkn][-1]
                 for i, event in enumerate(events)
@@ -878,7 +870,7 @@ def run_app():
             st.pyplot(fig)
 
     plot_agent_holdings('liquidator')
-    plot_agent_holdings('arbitrageur')
+    # plot_agent_holdings('arbitrageur')
 
     @st.fragment
     def plot_toxic_debt():
