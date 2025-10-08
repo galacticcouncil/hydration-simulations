@@ -1042,7 +1042,8 @@ def get_current_money_market():
         response.raise_for_status()  # Raise HTTPError for bad responses (4xx or 5xx)
         borrowers_data = response.json()["borrowers"]
     except requests.exceptions.RequestException as e:
-        raise Exception(f"Error fetching borrowers from API: {e}")
+        # raise ConnectionError(f"Error fetching borrowers from API: {e}")
+        borrowers_data = []
 
     # remove duplicated entries
     seen = set()
