@@ -10,10 +10,9 @@ from hydradx.model.amm.stableswap_amm import StableSwapPoolState
 
 os.chdir('../..')
 
-from hydradx.model.indexer_utils import get_latest_stableswap_data, get_omnipool_liquidity, \
-    get_current_block_height, get_current_omnipool, get_current_omnipool_assets, get_current_stableswap_pools,\
-    get_current_omnipool_router, get_fee_history, get_executed_trades, get_stableswap_liquidity_events, get_fee_pcts, \
-    get_omnipool_asset_data
+from hydradx.model.indexer_utils import get_latest_stableswap_data, get_current_block_height, get_current_omnipool, \
+    get_current_omnipool_assets, get_current_stableswap_pools, get_current_omnipool_router, get_fee_history, \
+    get_executed_trades, get_stableswap_liquidity_events, get_fee_pcts, get_omnipool_asset_data
 
 def test_get_latest_stableswap_data():
     """
@@ -32,16 +31,6 @@ def test_get_current_stableswap_pools():
     from hydradx.model.indexer_utils import get_current_stableswap_pools
     pools = get_current_stableswap_pools(block_number=8450000)
     assert len(pools) > 0
-
-
-def test_get_omnipool_data():
-    current_block = 8000000
-    ids = get_current_omnipool_assets()
-    ids_int = [int(x) for x in ids if x != "1"]
-    omnipool_liquidity = get_omnipool_liquidity(
-        max_block_id=current_block, min_block_id=current_block - 100, asset_ids=ids_int
-    )
-    assert omnipool_liquidity is not None
 
 
 def test_get_omnipool_state():

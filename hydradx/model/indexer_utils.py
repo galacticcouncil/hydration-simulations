@@ -4,6 +4,7 @@ import requests
 from hydradx.model.amm.omnipool_amm import OmnipoolState, DynamicFee
 from hydradx.model.amm.omnipool_router import OmnipoolRouter
 from hydradx.model.amm.stableswap_amm import StableSwapPoolState
+import hydradx.model.production_settings as settings
 
 
 URL_UNIFIED_PROD = 'https://galacticcouncil.squids.live/hydration-pools:unified-prod/api/graphql'
@@ -31,6 +32,10 @@ class AssetInfo:
         self.name = name
         self.symbol = symbol
         self.xcm_rate_limit = xcm_rate_limit
+
+    @property
+    def unique_id(self):
+        return self.symbol if self.asset_type != "StableSwap" else self.name
 
 
 def query_indexer(url: str, query: str, variables: dict = None) -> dict:
@@ -535,21 +540,19 @@ def get_current_stableswap_pools(block_number):
     return stableswap_pools
 
 
-def get_current_omnipool(block_number = None):
-    asset_info = get_asset_info_by_ids()
-    asset_ids = get_current_omnipool_assets()
-    for asset in asset_info.values():
-        if asset.asset_type == 'StableSwap':
-            asset.symbol = asset.name
-    max_block = get_current_block_height() if block_number is None else block_number
-    asset_ids_remaining = asset_ids.copy()
+def get_omnipool_liquidity(block_number: int = None, assets: dict[str: AssetInfo] = None, max_queries: int = 10):
+    asset_info = assets if assets else get_asset_info_by_ids()
+    asset_ids_remaining = [asset.id for asset in assets.values()] if assets else get_current_omnipool_assets()
+    if '1' not in asset_info:
+        asset_info.update(get_asset_info_by_ids(['1']))  # ensure hub token info is present
+    if '1' in asset_ids_remaining:
+        asset_ids_remaining.remove('1')  # hub token not needed
     liquidity = {}
     lrna = {}
     shares = {}
     protocol_shares = {}
-    current_block = max_block
+    current_block = get_current_block_height() if block_number is None else block_number
     blocks_per_query = 100
-    max_queries = 10
     queries = 0
     while asset_ids_remaining and queries < max_queries:
         omnipool_data = get_omnipool_asset_data(
@@ -559,18 +562,31 @@ def get_current_omnipool(block_number = None):
         )
         for item in reversed(omnipool_data):
             asset = asset_info[str(item['assetId'])]
-            if asset.symbol not in liquidity:
-                liquidity[asset.symbol] = int(item['balances']['d'][0]) / 10 ** asset.decimals
-                lrna[asset.symbol] = int(item['assetState']['d'][0]) / 10 ** asset_info['1'].decimals
-                shares[asset.symbol] = int(item['assetState']['d'][1]) / 10 ** asset.decimals
-                protocol_shares[asset.symbol] = int(item['assetState']['d'][2]) / 10 ** asset.decimals
+            if asset.unique_id not in liquidity:
+                liquidity[asset.unique_id] = int(item['balances']['d'][0]) / 10 ** asset.decimals
+                lrna[asset.unique_id] = int(item['assetState']['d'][0]) / 10 ** asset_info['1'].decimals
+                shares[asset.unique_id] = int(item['assetState']['d'][1]) / 10 ** asset.decimals
+                protocol_shares[asset.unique_id] = int(item['assetState']['d'][2]) / 10 ** asset.decimals
                 asset_ids_remaining.remove(asset.id)
         current_block -= blocks_per_query
         queries += 1
 
     for tkn in asset_ids_remaining:
         print(f"{asset_info[tkn].name} not found in {blocks_per_query * max_queries} blocks.")
-        asset_ids.remove(tkn)
+
+    return {tkn: {
+        "liquidity": liquidity[tkn] if tkn in liquidity else 0,
+        "LRNA": lrna[tkn] if tkn in lrna else 0,
+        "shares": shares[tkn] if tkn in shares else 0,
+        "protocol_shares": protocol_shares[tkn] if tkn in protocol_shares else 0,
+    } for tkn in liquidity}
+
+
+def get_current_omnipool(block_number = None):
+    asset_ids = get_current_omnipool_assets()
+    asset_info = get_asset_info_by_ids(asset_ids + ['1'])
+    max_block = get_current_block_height() if block_number is None else block_number
+    liquidity_data = get_omnipool_liquidity(block_number=max_block, assets=asset_info)
 
     asset_fee, lrna_fee = get_current_omnipool_fees(
         asset_info={tkn: asset_info[tkn] for tkn in asset_ids},
@@ -578,14 +594,7 @@ def get_current_omnipool(block_number = None):
     )
 
     omnipool = OmnipoolState(
-        tokens={
-            tkn: {
-                'liquidity': liquidity[tkn],
-                'LRNA': lrna[tkn],
-                'shares': shares[tkn],
-                'protocol_shares': protocol_shares[tkn],
-            } for tkn in liquidity
-        },
+        tokens=liquidity_data,
         asset_fee=asset_fee,
         lrna_fee=lrna_fee
     )
@@ -641,7 +650,7 @@ def get_omnipool_trades(
 
     while has_next_page:
         variables["after"] = after_cursor
-        data = query_indexer(URL_UNIFIED_PROD, query, variables)
+        data = query_indexer(url, query, variables)
         page_data = data['data']['events']['nodes']
         data_all.extend(page_data)
         page_info = data['data']['events']['pageInfo']
@@ -657,16 +666,21 @@ def get_omnipool_trades(
         trade.update(args)
         sell_id = args['assetIn']
         buy_id = args['assetOut']
-        tkn_sell = asset_info[sell_id] if sell_id in asset_info else None
-        tkn_buy = asset_info[buy_id] if buy_id in asset_info else None
-        trade['assetIn'] = tkn_sell.name if tkn_sell.asset_type == "StableSwap" else tkn_sell.symbol
-        trade['assetOut'] = tkn_buy.name if tkn_buy.asset_type == "StableSwap" else tkn_buy.symbol
+        tkn_sell = asset_info[sell_id]
+        tkn_buy = asset_info[buy_id]
+        trade['assetIn'] = tkn_sell.unique_id
+        trade['assetOut'] = tkn_buy.unique_id
         trade['amountIn'] = int(args['amountIn']) / (10 ** tkn_sell.decimals) if tkn_sell else None
         trade['amountOut'] = int(args['amountOut']) / (10 ** tkn_buy.decimals) if tkn_buy else None
         trade['protocolFeeAmount'] = int(args['protocolFeeAmount']) / (10 ** asset_info['1'].decimals)
         trade['assetFeeAmount'] = int(args['assetFeeAmount']) / (10 ** tkn_buy.decimals) if tkn_buy else None
         trade['hubAmountOut'] = int(args['hubAmountOut']) / (10 ** asset_info['1'].decimals)
         trade['hubAmountIn'] = int(args['hubAmountIn']) / (10 ** asset_info['1'].decimals)
+        trade['assetFee'] = float(trade['assetFeeAmount']) / (trade['amountOut'] + trade['assetFeeAmount'])
+        if trade['hubAmountOut'] > 0:
+            trade['protocolFee'] = float(trade['protocolFeeAmount']) / trade['hubAmountOut']
+        else:
+            pass
         trade['block_number'] = trade.pop('paraBlockHeight')
     return data_all
 
@@ -683,18 +697,9 @@ def get_current_omnipool_fees(
     if asset_info is None:
         asset_info = get_asset_info_by_ids(get_current_omnipool_assets())
 
-    asset_fee = DynamicFee(
-        minimum=0.0025,
-        maximum=0.05,
-        amplification=2,
-        decay=0.00001
-    )
-    lrna_fee = DynamicFee(
-        minimum=0.0005,
-        maximum=0.001,
-        amplification=1,
-        decay=0.000005
-    )
+    asset_fee = settings.omnipool_asset_fee
+    lrna_fee = settings.omnipool_lrna_fee
+
     blocks_per_query = 100
     max_queries = int(max(
         (lrna_fee.maximum - lrna_fee.minimum) / lrna_fee.decay,
@@ -841,19 +846,26 @@ def get_executed_trades(min_block: int, max_block: int, asset_ids: list[str] = N
         has_next_page = page_info['hasNextPage']
         after_cursor = page_info['endCursor']
 
-    trade_data = [
-        {
+    trade_data = []
+    for x in data_all:
+        if x['routeTradeOutputs']['nodes'][0]['assetId'] not in asset_info:
+            continue
+        if x['routeTradeInputs']['nodes'][0]['assetId'] not in asset_info:
+            continue
+        node = x['routeTradeInputs']['nodes'][0]
+        next_trade = {
             'block_number': int(x['paraBlockHeight']),
-            'input_asset_id': x['routeTradeInputs']['nodes'][0]['assetId'],
-            'input_amount': int(x['routeTradeInputs']['nodes'][0]['amount']) / (10 ** asset_info[x['routeTradeInputs']['nodes'][0]['assetId']].decimals),
-            'output_asset_id': x['routeTradeOutputs']['nodes'][0]['assetId'],
-            'output_amount': int(x['routeTradeOutputs']['nodes'][0]['amount']) / (10 ** asset_info[x['routeTradeOutputs']['nodes'][0]['assetId']].decimals),
+            'input_asset_id': node['assetId'],
+            'input_amount': int(node['amount']) / (10 ** asset_info[node['assetId']].decimals),
+            'output_asset_id': node['assetId'],
+            'output_amount': int(node['amount']) / (10 ** asset_info[node['assetId']].decimals),
             'all_involved_asset_ids': [y for y in x['allInvolvedAssetIds']]
         }
-        for x in data_all
-        if x['routeTradeOutputs']['nodes'][0]['assetId'] in asset_info
-        and x['routeTradeInputs']['nodes'][0]['assetId'] in asset_info
-    ]
+        if float(node['hubAmountOut']) > 0:
+            next_trade['protocol_fee'] = float(node['protocolFeeAmount']) / float(node['hubAmountOut'])
+        if float(node['amountIn']) > 0:
+            next_trade['asset_fee'] = float(node['assetFeeAmount']) / (float(node['amountOut']) + float(node['assetFeeAmount']))
+        trade_data.append(next_trade)
 
     return trade_data
 
