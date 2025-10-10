@@ -16,11 +16,11 @@ from hydradx.model.amm.global_state import GlobalState
 from hydradx.model.amm.omnipool_router import OmnipoolRouter
 from hydradx.model.amm.money_market import MoneyMarket, MoneyMarketAsset, CDP
 from hydradx.model.amm.stableswap_amm import StableSwapPoolState
-from hydradx.model.amm.trade_strategies import liquidate_cdps, schedule_swaps, omnipool_arbitrage
+from hydradx.model.amm.trade_strategies import liquidate_cdps, schedule_swaps, omnipool_arbitrage, sell_all
 from hydradx.model.processing import get_current_money_market, save_money_market, load_money_market as load_money_market_from_file
 from hydradx.model.amm.agents import Agent
 from hydradx.model.indexer_utils import get_current_omnipool_router, get_current_block_height
-from hydradx.apps.display_utils import get_distribution, one_line_markdown
+from hydradx.apps.display_utils import get_distribution, one_line_markdown, bell_distribute
 from hydradx.model.amm.fixed_price import FixedPriceExchange
 
 st.markdown("""
@@ -131,7 +131,6 @@ def distribute_cdps(
         ]
     else:
         # check the liquidation threshold of the collateral and debt assets
-        # we'll set the health factor of the first CDP right above this threshold.
         liquidation_threshold = money_market.cdp_liquidation_threshold(CDP(
             collateral={tkn: extra_collateral[tkn] / money_market.price(tkn) for tkn in extra_collateral},
             debt={tkn: extra_debt[tkn] / money_market.price(tkn) for tkn in extra_debt}
@@ -750,7 +749,10 @@ def run_app():
     initial_state = GlobalState(
         pools=[router],
         agents={
-            'liquidator': Agent(enforce_holdings=False, trade_strategy=liquidate_cdps('router')),
+            'liquidator': Agent(
+                enforce_holdings=False,
+                trade_strategy=liquidate_cdps('router') + sell_all('router', tkn_buy='USDT')
+            ),
             'trader': Agent(
                 enforce_holdings=False,
                 trade_strategy=schedule_swaps(
@@ -817,7 +819,7 @@ def run_app():
                 if tkn in event.pools['omnipool'].asset_list
                 else event.pools['money_market'].price(tkn)
                 if tkn in event.pools['money_market'].asset_list
-                else event.pools['router'].price_route(events[0].pools['router'].find_best_route(tkn, 'USD'), 'sell')
+                else event.pools['router'].price_route(events[0].pools['router'].find_best_route(tkn, 'USD'), 'buy')
                 if tkn in event.pools['router'].asset_list
                 else price_paths[tkn][i] if i < len(price_paths[tkn])
                 else price_paths[tkn][-1]
