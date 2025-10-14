@@ -239,14 +239,14 @@ class OmnipoolState(Exchange):
         self._lrna_fee.current[tkn] = value
         self._lrna_fee.last_updated[tkn] = self.time_step
 
-    def _get_lrna_fee(self, tkn, delta_r: float = 0) -> float:
-        if self.slip_factor is not None:
-            return self.compute_lrna_slip_fee(tkn, delta_r)
-
-        return self.compute_dynamic_fee(
+    def _get_lrna_fee(self, tkn, delta_q: float = 0) -> float:
+        fee = self.compute_dynamic_fee(
             fee=self._lrna_fee,
             tkn=tkn
         )
+        if self.slip_factor is not None:
+            fee += self.compute_lrna_slip_fee(tkn, delta_q)
+        return min(fee, self._lrna_fee.maximum)
 
     @property
     def last_lrna_fee(self):
@@ -267,13 +267,13 @@ class OmnipoolState(Exchange):
         self._asset_fee.last_updated[tkn] = self.time_step
 
     def _get_asset_fee(self, tkn, delta_r: float = 0) -> float:
-        if self.slip_factor is not None:
-            return self.compute_slip_fee(tkn, delta_r)
-
-        return self.compute_dynamic_fee(
+        fee = self.compute_dynamic_fee(
             fee=self._asset_fee,
             tkn=tkn
         )
+        if self.slip_factor is not None:
+            fee += self.compute_slip_fee(tkn, delta_r)
+        return min(fee, self._asset_fee.maximum)
 
     @property
     def last_fee(self):
@@ -747,7 +747,8 @@ class OmnipoolState(Exchange):
             if not agent.validate_holdings(tkn, delta_ra):
                 return self.fail_transaction('agent has insufficient assets')
             delta_qi = self.lrna[tkn] * delta_ra / (self.liquidity[tkn] - delta_ra)
-            lrna_fee_total = -delta_qi * lrna_fee
+            # recalculate the fee based on the actual delta_qi
+            lrna_fee_total = -delta_qi * self.lrna_fee(tkn, delta_qi)
             lrna_fee_burn = lrna_fee_total * self.lrna_fee_burn
             fee_deposit = lrna_fee_total - lrna_fee_burn
             delta_qa = -delta_qi - lrna_fee_total
