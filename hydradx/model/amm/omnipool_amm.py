@@ -46,6 +46,7 @@ class DynamicFee:
 
 class OmnipoolState(Exchange):
     unique_id: str = 'omnipool'
+    fee_accumulator: dict[str: float]
 
     def __init__(self,
                  tokens: dict[str: dict],
@@ -314,6 +315,7 @@ class OmnipoolState(Exchange):
         return self.slip_factor * abs(delta_r) / (self.liquidity[tkn] + delta_r) + self.minimum_slip_fee
 
     def compute_lrna_slip_fee(self, tkn: str, delta_q: float) -> float:
+        delta_q += (self.current_block.volume_in[tkn] + self.current_block.volume_out[tkn]) * self.lrna_price(tkn)
         return self.slip_factor * abs(delta_q) / (self.lrna[tkn] + delta_q) + self.minimum_slip_fee
 
     def add_token(
@@ -331,6 +333,7 @@ class OmnipoolState(Exchange):
         self.shares[tkn] = shares or liquidity
         self.protocol_shares[tkn] = protocol_shares or self.shares[tkn]
         self.weight_cap[tkn] = weight_cap
+        self.fee_accumulator[tkn] = 0
         if hasattr(self, '_lrna_fee'):
             if tkn not in self._lrna_fee.current: self._lrna_fee.current[tkn] = self._lrna_fee.minimum
             if tkn not in self._asset_fee.current: self._asset_fee.current[tkn] = self._asset_fee.minimum
