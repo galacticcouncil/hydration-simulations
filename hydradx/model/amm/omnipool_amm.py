@@ -310,6 +310,7 @@ class OmnipoolState(Exchange):
         return fee_value
 
     def compute_slip_fee(self, tkn: str, delta_r: float) -> float:
+        delta_r += self.current_block.volume_in[tkn] + self.current_block.volume_out[tkn]
         return self.slip_factor * abs(delta_r) / (self.liquidity[tkn] + delta_r) + self.minimum_slip_fee
 
     def compute_lrna_slip_fee(self, tkn: str, delta_q: float) -> float:
