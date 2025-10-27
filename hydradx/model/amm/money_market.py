@@ -62,7 +62,7 @@ class MoneyMarketAsset:
             emode_liquidation_threshold: float = None,
             emode_ltv: float = None,
             emode_label: str = '',
-            liquidity: float = 0,
+            liquidity: float = float('inf'),
             supply_cap: float = float('inf')
     ):
         self.name = name
@@ -289,7 +289,8 @@ class MoneyMarket(Exchange):
                collateral_amt: float) -> CDP or None:
         assert borrow_asset != collateral_asset
         assert borrow_asset in self.liquidity
-        assert borrow_amt <= self.liquidity[borrow_asset] - self.borrowed[borrow_asset]
+        if not borrow_amt <= self.liquidity[borrow_asset] - self.borrowed[borrow_asset]:
+            return self.fail_transaction(f"Not enough liquidity to borrow {borrow_asset}")
         assert agent.validate_holdings(collateral_asset, collateral_amt)
         price = self.price(collateral_asset) / self.price(borrow_asset)
         if price * collateral_amt * self.get_ltv(collateral_asset, borrow_asset, self.assets[collateral_asset].emode_label) < borrow_amt:
