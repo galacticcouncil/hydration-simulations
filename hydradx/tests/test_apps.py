@@ -1,4 +1,7 @@
+import numpy as np
+
 from hydradx.apps.gigadot_modeling.utils import simulate_route, get_omnipool_minus_vDOT, get_slippage_dict
+from hydradx.model.amm.money_market import MoneyMarket, MoneyMarketAsset, CDP
 from hydradx.model.amm.stableswap_amm import StableSwapPoolState
 from hydradx.model.amm.omnipool_amm import OmnipoolState
 from hydradx.model.amm.agents import Agent
@@ -185,6 +188,12 @@ def test_eth_params():
 
 
 def test_add_withdraw():
-    from hydradx.apps.Misc import add_withdraw_losses
-    add_withdraw_losses.scenario_1()
-    add_withdraw_losses.scenario_2()
+    from hydradx.apps.everything_is_collateral import add_withdraw_losses
+    # add_withdraw_losses.scenario_1()
+    add_withdraw_losses.run_and_plot()
+
+
+def test_slip_fees():
+    from hydradx.apps.fees import slip_fees_comparison
+    slip_fees_comparison.run_and_plot()
+

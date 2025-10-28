@@ -74,14 +74,15 @@ def test_back_and_forth_trader(omnipool: OmnipoolState, pct: float):
        arb_precision_strategy)
 def test_omnipool_arbitrager_feeless(omnipool: OmnipoolState, market: list, arb_precision: int):
     agent = Agent(enforce_holdings=False)
-    external_market = {omnipool.asset_list[i]: market[i] for i in range(len(omnipool.asset_list))}
+    assets = list(omnipool.liquidity)
+    external_market = {assets[i]: market[i] for i in range(len(assets))}
     external_market[omnipool.stablecoin] = 1.0
     state = GlobalState(pools={'omnipool': omnipool}, agents={'agent': agent}, external_market=external_market)
     strat = omnipool_arbitrage('omnipool', arb_precision)
 
     strat.execute(state, 'agent')
     assert not omnipool.fail
-    new_holdings = {tkn: agent.get_holdings(tkn) for tkn in omnipool.asset_list}
+    new_holdings = {tkn: agent.get_holdings(tkn) for tkn in omnipool.liquidity}
 
     old_value, new_value = 0, 0
 
@@ -129,7 +130,7 @@ def test_omnipool_arbitrager(hdx_value, dot_value):
         if abs(new_holdings['LRNA']) >= 1e-10:
             raise AssertionError(f'Arbitrageur traded LRNA. new: {new_holdings["LRNA"]}')
 
-        for asset in omnipool.asset_list:
+        for asset in omnipool.liquidtity:
             new_value += new_holdings[asset] * external_market[asset]
 
             # Trading should bring pool to market price
@@ -169,23 +170,23 @@ def test_omnipool_arbitrager_periodic(frequency: int):
     for i, event in enumerate(events):
         if i == 0: continue
         if event.time_step % frequency == 0:  # there should be trade between steps i and i-1
-            for asset in omnipool.asset_list:
+            for asset in omnipool.liquidity:
                 if event.pools['omnipool'].liquidity[asset] == events[i-1].pools['omnipool'].liquidity[asset]:
                     raise AssertionError(f'Arbitrageur did not trade at timestep {event.time_step}.')
         else:  # there should be no trade between steps i and i-1
-            for asset in omnipool.asset_list:
+            for asset in omnipool.liquidity:
                 if event.pools['omnipool'].liquidity[asset] != events[i-1].pools['omnipool'].liquidity[asset]:
                     raise AssertionError(f'Arbitrageur traded at timestep {event.time_step}.')
 
 
 @given(omnipool_reasonable_config(token_count=3))
 def test_omnipool_LP(omnipool: OmnipoolState):
-    holdings = {asset: 10000 for asset in omnipool.asset_list}
+    holdings = {asset: 10000 for asset in omnipool.liquidity}
     initial_agent = Agent(holdings=holdings, trade_strategy=invest_all('omnipool', when=4))
     initial_state = GlobalState(pools={'omnipool': omnipool}, agents={'agent': initial_agent})
 
     new_state = invest_all('omnipool').execute(initial_state.copy(), 'agent')
-    for tkn in omnipool.asset_list:
+    for tkn in omnipool.liquidity:
         if new_state.agents['agent'].holdings[tkn] != 0:
             raise AssertionError(f'Failed to LP {tkn}')
         if new_state.agents['agent'].holdings[('omnipool', tkn)] == 0:
@@ -198,7 +199,7 @@ def test_omnipool_LP(omnipool: OmnipoolState):
     if hdx_state.agents['agent'].holdings[('omnipool', 'HDX')] == 0:
         raise AssertionError('HDX shares not received.')
 
-    for tkn in omnipool.asset_list:
+    for tkn in omnipool.liquidity:
         if tkn == 'HDX':
             continue
         if hdx_state.agents['agent'].holdings[tkn] == 0:

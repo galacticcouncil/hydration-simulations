@@ -148,7 +148,7 @@ def test_cash_out_no_liquidity(omnipool: OmnipoolState, market: dict, holdings: 
 
 @given(omnipool_reasonable_config(token_count=5), reasonable_pct(token_count=5))
 def test_cash_out_only_liquidity_at_spot(omnipool: OmnipoolState, pct_list: list):
-    asset_list = omnipool.asset_list
+    asset_list = list(omnipool.liquidity.keys())
     holdings = {
         (omnipool.unique_id, tkn): omnipool.liquidity[tkn] * pct_list[i] for i, tkn in enumerate(asset_list)
     }
@@ -225,7 +225,7 @@ def test_cash_out_one_asset_only_liquidity(omnipool: OmnipoolState, pct_list: li
 def test_cash_out_lrna(omnipool: OmnipoolState):
     initial_lrna = 1000
     agent = Agent(holdings={'LRNA': initial_lrna})
-    market = {tkn: omnipool.usd_price(tkn) for tkn in omnipool.asset_list}
+    market = {tkn: omnipool.usd_price(tkn) for tkn in omnipool.liquidity}
     cash = omnipool.cash_out(agent, market)
     if cash == 0:
         raise ValueError("Cash out should not be zero")
@@ -255,13 +255,13 @@ def test_cash_out_lrna(omnipool: OmnipoolState):
 def test_cash_out_accuracy(omnipool: oamm.OmnipoolState, share_price_ratio, lp_index):
     lp_asset = omnipool.asset_list[lp_index % len(omnipool.asset_list)]
     agent = Agent(
-        holdings={('omnipool', tkn): omnipool.shares[tkn] / 10 for tkn in omnipool.asset_list}
+        holdings={('omnipool', tkn): omnipool.shares[tkn] / 10 for tkn in omnipool.liquidity}
     )
-    agent.holdings.update({tkn: 1 for tkn in omnipool.asset_list})
+    agent.holdings.update({tkn: 1 for tkn in omnipool.liquidity})
     for tkn in omnipool.asset_list:
         agent.share_prices[('omnipool', tkn)] = omnipool.lrna_price(tkn) * share_price_ratio
 
-    market_prices = {tkn: omnipool.usd_price(tkn) for tkn in omnipool.asset_list}
+    market_prices = {tkn: omnipool.usd_price(tkn) for tkn in omnipool.liquidity}
     cash_out = omnipool.cash_out(agent, market_prices)
 
     withdraw_state, withdraw_agent = omnipool.copy(), agent.copy()
@@ -276,7 +276,7 @@ def test_cash_out_accuracy(omnipool: oamm.OmnipoolState, share_price_ratio, lp_i
     if 'LRNA' in withdraw_agent.holdings:
         lrna_sells = {
             tkn: withdraw_agent.holdings['LRNA'] * withdraw_state.lrna[tkn] / withdraw_state.lrna_total
-            for tkn in omnipool.asset_list
+            for tkn in omnipool.liquidity
         }
         lrna_profits = dict()
         for tkn, delta_q in lrna_sells.items():

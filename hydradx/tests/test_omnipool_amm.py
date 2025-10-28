@@ -16,6 +16,7 @@ from hydradx.model.amm.global_state import GlobalState
 from hydradx.model.amm.omnipool_amm import DynamicFee, OmnipoolState, OmnipoolLiquidityPosition
 from hydradx.model.amm.trade_strategies import constant_swaps, omnipool_arbitrage
 from hydradx.tests.strategies_omnipool import omnipool_reasonable_config, omnipool_config, assets_config
+import hydradx.model.production_settings as production_settings
 
 mp.dps = 50
 
@@ -2911,3 +2912,155 @@ def test_trade_to_price():
         omnipool.trade_to_price(agent, tkn='USD', other_tkn='HDX', target_price=expected_price)
         price = omnipool.lrna_price('USD')
         assert price == pytest.approx(expected_price, rel=1e-15)
+
+
+def test_inside_fee():
+    import numpy as np
+    dynamic_asset_fee = production_settings.omnipool_asset_fee
+    dynamic_lrna_fee = production_settings.omnipool_lrna_fee
+    omnipool = OmnipoolState(
+        tokens={
+            'HDX': {'liquidity': mpf(1000000), 'LRNA': mpf(1000000)},
+            'USD': {'liquidity': mpf(1000000), 'LRNA': mpf(1000000)}
+        },
+        asset_fee=0.0025,
+        lrna_fee=0.0005,
+        slip_factor=1.0,
+        minimum_slip_fee=0.0
+    )
+    agent = Agent(holdings={'HDX': mpf(10000)})
+
+    import numpy as np
+
+    def calculate_fee_direct(self, tkn: str, delta_ra: float):
+        """
+        Calculate the exact fee and trade amount by solving the polynomial equation directly.
+
+        Returns:
+            tuple: (delta_q, total_fee) or (None, None) if no valid solution
+        """
+
+        L = self.liquidity[tkn]
+        Q = self.lrna[tkn]
+        r = -delta_ra  # Make positive for calculation
+        s = self.slip_factor
+        m = self.minimum_slip_fee + dynamic_asset_fee.minimum
+        p = self.lrna_mint_pct
+
+        # Check basic validity
+        if r >= L:
+            return None, None
+
+        # Account for existing trades in current block
+        existing = self.current_block.lrna_in[tkn] + self.current_block.lrna_out[tkn]
+
+        # Derive and solve the polynomial equation for fee
+        if p == 0:
+            # Without minting - quadratic equation
+            # After substitution and algebra, we get: a*fee^2 + b*fee + c = 0
+
+            a = L
+            b = -(L * (1 + m) + s * existing / Q)
+            c = m * L + s * r * (1 + existing / Q)
+
+            discriminant = b ** 2 - 4 * a * c
+            if discriminant < 0:
+                return None, None
+
+            sqrt_disc = np.sqrt(discriminant)
+            f1 = (-b - sqrt_disc) / (2 * a)
+            f2 = (-b + sqrt_disc) / (2 * a)
+
+            # Choose the valid fee (should be between 0 and 1, usually the smaller one)
+            if 0 <= f1 <= 1:
+                fee = f1
+            elif 0 <= f2 <= 1:
+                fee = f2
+            else:
+                return None, None
+
+        else:
+            # With minting - this becomes a higher degree polynomial
+            # The exact degree depends on how terms combine after substitution
+
+            # For the general case with minting, after substituting:
+            # delta_q = Q*r*(d + fee*(1-fee)*L*p)/d^2 where d = L*(1-fee) - r
+            # into fee = m + s*(delta_q + existing)/(Q + delta_q + existing)
+            # and clearing denominators, we get these coefficients:
+
+            # Quartic coefficients (may reduce to cubic if a4 = 0)
+            a4 = -L * L * L * p * s * r / (Q * Q)
+
+            a3 = L * L * (s * r * (2 + p) / Q + p * s * r / (Q * Q) - p * (m - 1))
+
+            a2 = -L * (s * r * (1 + 2 * Q + existing) / Q +
+                       (1 + m) * (1 + s * r / Q) -
+                       p * (m - 1 - s * r / Q))
+
+            a1 = (L + r) * (1 + m + s * r / Q) + s * existing
+
+            a0 = -(m * (L + r) + s * r * (1 + existing / Q))
+
+            # Build coefficient list, removing near-zero leading coefficients
+            if abs(a4) > 1e-12:
+                coefficients = [a4, a3, a2, a1, a0]
+            elif abs(a3) > 1e-12:
+                coefficients = [a3, a2, a1, a0]
+            else:
+                coefficients = [a2, a1, a0]
+
+            # Solve the polynomial
+            roots = np.roots(coefficients)
+
+            # Find valid real roots between 0 and 1
+            valid_fees = []
+            for root in roots:
+                if np.isreal(root):
+                    f = float(np.real(root))
+                    if 0 <= f <= 1:
+                        # Check that the denominator will be positive
+                        denom = L * (1 - f) - r
+                        if denom > 0:
+                            valid_fees.append(f)
+
+            if not valid_fees:
+                return None, None
+
+            # Take the smallest valid fee (most economically reasonable)
+            fee = min(valid_fees)
+
+        # Now calculate delta_q using the exact fee we found
+        denom = L * (1 - fee) + delta_ra  # Note: delta_ra is negative
+        if denom <= 0:
+            return None, None
+
+        delta_qa = -Q * delta_ra / denom
+
+        # Add minting if applicable
+        if p > 0:
+            delta_qm = -fee * (1 - fee) * L * delta_qa * p / denom
+            delta_q = -delta_qa + delta_qm
+        else:
+            delta_q = -delta_qa
+
+        # Verify our solution (optional - for debugging)
+        if __debug__:
+            slip_fee_check = s * abs(delta_q + existing) / (Q + delta_q + existing) + self.minimum_slip_fee
+            fee_check = dynamic_asset_fee.minimum + slip_fee_check
+            if abs(fee_check - fee) > 1e-8:
+                print(f"Warning: Fee verification failed. Expected {fee}, got {fee_check}")
+
+        return delta_q, fee
+
+    omnipool.inside_fee = calculate_fee_direct.__get__(omnipool)
+
+    # buying asset
+    tkn = 'HDX'
+    delta_ra = -agent.get_holdings('HDX')
+    lrna_fee = omnipool.lrna_fee(tkn)
+    delta_q, asset_fee = omnipool.inside_fee(tkn, delta_ra)
+    expected_slip_fee = omnipool.compute_slip_fee('HDX', delta_q)
+    if -delta_ra + omnipool.liquidity[tkn] <= 0:
+        return omnipool.fail_transaction('insufficient assets in pool')
+    slip_fee = omnipool.compute_slip_fee('HDX', delta_q)
+    return None

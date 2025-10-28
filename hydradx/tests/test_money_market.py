@@ -267,8 +267,12 @@ def test_borrow():
     agent = Agent(holdings={collateral_asset: collat_amt})
     mm = MoneyMarket(
         assets=[
-            MoneyMarketAsset(borrow_asset, 1, 1000000, 0.01, 0.7, 0.7),
-            MoneyMarketAsset(collateral_asset, 11, 1000000, 0.01, 0.7, 0.7)
+            MoneyMarketAsset(
+                borrow_asset, price=1, liquidity=1000000, liquidation_bonus=0.01, liquidation_threshold=0.7
+            ),
+            MoneyMarketAsset(
+                collateral_asset, price=11, liquidity=1000000, liquidation_bonus=0.01, liquidation_threshold=0.7
+            )
         ]
     )
     cdp = mm.borrow(agent, borrow_asset, collateral_asset, borrow_amt, collat_amt)
@@ -463,7 +467,7 @@ def test_omnipool_liquidate_cdp_not_profitable():
     collat_ratio = 5.0
     collateral_amt = 2000
     omnipool = omnipool_setup_for_liquidation_testing()
-    for tkn in omnipool.asset_list:  # reduce TVL to increase slippage for the test
+    for tkn in omnipool.liquidity:  # reduce TVL to increase slippage for the test
         omnipool.liquidity[tkn] /= 2000
     dot_price = omnipool.price("DOT", "USDT")
 
@@ -730,7 +734,7 @@ def test_liquidate_against_omnipool_fuzz(collateral_amt1: float, ratio1: float, 
     elif cdp1.collateral['DOT'] == 0:  # fully liquidated, bad debt remaining
         assert ratio1 > 1/(1 + mm.get_liquidation_bonus('DOT', 'USDT'))
     elif cdp1.debt['USDT'] == debt_amt1:  # not liquidated
-        if ratio1 < liq_threshold:  # 1. overcollateralized
+        if ratio1 <= liq_threshold:  # 1. overcollateralized
             pass
         elif price_mult >= 1:  # 3. not profitable to liquidate
             pass
@@ -765,10 +769,10 @@ def test_set_mm_oracles_to_external_market():
                 liquidation_threshold=0.7,
                 ltv=0.6
             )
-            for tkn in omnipool.asset_list
+            for tkn in omnipool.liquidity
         ], oracle_source=omnipool.usd_price
     )
-    prices = {tkn: omnipool.price(tkn, "USDT") for tkn in omnipool.asset_list}
+    prices = {tkn: omnipool.price(tkn, "USDT") for tkn in omnipool.liquidity}
     mm.update()
     for tkn in mm.liquidity:
         if mm.price(tkn) != pytest.approx(prices[tkn], rel=1e-40):

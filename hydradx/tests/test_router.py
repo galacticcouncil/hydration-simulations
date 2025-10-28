@@ -1,15 +1,13 @@
 import pytest
-from hypothesis import given, strategies as st, settings  , reproduce_failure
+from hypothesis import given, strategies as st, settings  # , reproduce_failure
 from mpmath import mpf, mp
 from datetime import timedelta
 from typing import Literal
 
-from hydradx.apps.gigadot_modeling.liquidity import tkn_buy
 from hydradx.model.amm.agents import Agent
 from hydradx.model.amm.omnipool_amm import OmnipoolState
 from hydradx.model.amm.omnipool_router import OmnipoolRouter, Trade
 from hydradx.model.amm.stableswap_amm import StableSwapPoolState
-from hydradx.model.amm.money_market import MoneyMarket, MoneyMarketAsset
 from hydradx.model.amm.fixed_price import FixedPriceExchange
 from hydradx.tests.strategies_omnipool import fee_strategy
 
@@ -80,7 +78,7 @@ def test_swap_omnipool(assets: list[float], trade_size_mult: float):
     router.swap(agent1, tkn_buy="DOT", tkn_sell="USDT", buy_quantity=10000,)
     omnipool2.swap(agent2, "DOT", "USDT", buy_quantity=10000)
 
-    for token in omnipool.asset_list:
+    for token in omnipool.liquidity:
         if omnipool.liquidity[token] != omnipool2.liquidity[token]:
             raise ValueError(f"omnipool liquidity {omnipool.liquidity[token]} != {omnipool2.liquidity[token]}")
         if omnipool.lrna[token] != omnipool2.lrna[token]:
@@ -90,7 +88,7 @@ def test_swap_omnipool(assets: list[float], trade_size_mult: float):
     router.swap(agent1, tkn_buy="DOT", tkn_sell="USDT", sell_quantity=trade_size,)
     omnipool2.swap(agent2, "DOT", "USDT", sell_quantity=trade_size)
 
-    for token in omnipool.asset_list:
+    for token in omnipool.liquidity:
         if omnipool.liquidity[token] != omnipool2.liquidity[token]:
             raise ValueError(f"omnipool liquidity {omnipool.liquidity[token]} != {omnipool2.liquidity[token]}")
         if omnipool.lrna[token] != omnipool2.lrna[token]:
@@ -255,7 +253,7 @@ def test_swap():
     trade_size = 1
     agent1 = Agent(holdings={sell_tkn: trade_size})
 
-    best_route = router.find_best_route(buy_tkn, sell_tkn, direction="sell")
+    best_route = router.find_best_route(buy_tkn, sell_tkn, sell_quantity=trade_size)
     if best_route[0].exchange != "stablepool" or best_route[-1].exchange != "stablepool2":
         raise ValueError(f"best route {best_route} != ('stablepool', 'stablepool2')")
 
@@ -303,7 +301,7 @@ def test_swap2():
     trade_size = 1
     agent1 = Agent(holdings={sell_tkn: trade_size})
 
-    best_route = router.find_best_route(buy_tkn, sell_tkn, direction="buy")
+    best_route = router.find_best_route(buy_tkn, sell_tkn, buy_quantity=trade_size)
     if best_route[0].exchange != "omnipool" or best_route[-1].exchange != "stablepool":
         raise ValueError(f"best route {best_route} != ('stablepool', 'omnipool')")
 
@@ -1004,10 +1002,10 @@ def test_sell_spot_intermediate():
     agent = Agent(enforce_holdings=False)
     tkn_sell = "stable1"
     tkn_buy = "HDX"
-    assert router.find_best_route(
-        tkn_buy=tkn_buy, tkn_sell=tkn_sell, direction='buy'
-    )[1].exchange == "binance"
     trade_size = mpf(1) / 100000
+    assert router.find_best_route(
+        tkn_buy=tkn_buy, tkn_sell=tkn_sell, sell_quantity=trade_size
+    )[1].exchange == "binance"
     expected_price = router.sell_spot(tkn_sell=tkn_sell, tkn_buy=tkn_buy)
     router.swap(agent, tkn_sell=tkn_sell, tkn_buy=tkn_buy, sell_quantity=trade_size)
     actual_price = agent.get_holdings(tkn_buy) / -agent.get_holdings(tkn_sell)
@@ -1046,10 +1044,10 @@ def test_buy_spot_intermediate():
     agent = Agent(enforce_holdings=False)
     tkn_sell = "stable1"
     tkn_buy = "HDX"
-    assert router.find_best_route(
-        tkn_buy=tkn_buy, tkn_sell=tkn_sell, direction='buy'
-    )[1].exchange == "binance"
     trade_size = mpf(1) / 100000
+    assert router.find_best_route(
+        tkn_buy=tkn_buy, tkn_sell=tkn_sell, buy_quantity=trade_size
+    )[1].exchange == "binance"
     expected_price = router.buy_spot(tkn_sell=tkn_sell, tkn_buy=tkn_buy)
     router.swap(agent, tkn_sell=tkn_sell, tkn_buy=tkn_buy, buy_quantity=trade_size)
     actual_price = -agent.get_holdings(tkn_sell) / agent.get_holdings(tkn_buy)
