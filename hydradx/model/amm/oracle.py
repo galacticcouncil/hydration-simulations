@@ -7,6 +7,8 @@ class Block:
         self.price = {tkn: input_state.price(tkn) for tkn in input_state.liquidity}
         self.volume_in = {tkn: 0 for tkn in input_state.liquidity}
         self.volume_out = {tkn: 0 for tkn in input_state.liquidity}
+        self.lrna_in = {tkn: 0 for tkn in input_state.liquidity}
+        self.lrna_out
         self.withdrawals = {tkn: 0 for tkn in input_state.liquidity}
         self.lps = {tkn: 0 for tkn in input_state.liquidity}
         self.asset_list = input_state.asset_list.copy()
