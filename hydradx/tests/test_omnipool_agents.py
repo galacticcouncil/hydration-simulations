@@ -45,7 +45,7 @@ def test_back_and_forth_trader_feeless(omnipool: OmnipoolState, pct: float):
     strat.execute(state, 'agent')
     new_agent = state.agents['agent']
     assert new_agent.holdings['LRNA'] == old_agent.holdings['LRNA']  # LRNA holdings should be *exact*
-    for asset in omnipool.asset_list:
+    for asset in omnipool.liquidity:
         assert new_agent.holdings[asset] == pytest.approx(old_agent.holdings[asset], rel=1e-15)
 
 
@@ -74,7 +74,7 @@ def test_back_and_forth_trader(omnipool: OmnipoolState, pct: float):
        arb_precision_strategy)
 def test_omnipool_arbitrager_feeless(omnipool: OmnipoolState, market: list, arb_precision: int):
     agent = Agent(enforce_holdings=False)
-    assets = list(omnipool.liquidity)
+    assets = list(omnipool.liquidity.keys())
     external_market = {assets[i]: market[i] for i in range(len(assets))}
     external_market[omnipool.stablecoin] = 1.0
     state = GlobalState(pools={'omnipool': omnipool}, agents={'agent': agent}, external_market=external_market)
@@ -90,7 +90,7 @@ def test_omnipool_arbitrager_feeless(omnipool: OmnipoolState, market: list, arb_
     if agent.get_holdings("LRNA") / omnipool.lrna_total != pytest.approx(0, abs=1e-15):
         raise
 
-    for asset in omnipool.asset_list:
+    for asset in omnipool.liquidity:
         new_value += new_holdings[asset] * external_market[asset]
 
         # Trading should bring pool to market price
@@ -130,7 +130,7 @@ def test_omnipool_arbitrager(hdx_value, dot_value):
         if abs(new_holdings['LRNA']) >= 1e-10:
             raise AssertionError(f'Arbitrageur traded LRNA. new: {new_holdings["LRNA"]}')
 
-        for asset in omnipool.liquidtity:
+        for asset in omnipool.liquidity:
             new_value += new_holdings[asset] * external_market[asset]
 
             # Trading should bring pool to market price
