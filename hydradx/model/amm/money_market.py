@@ -226,20 +226,20 @@ class MoneyMarket(Exchange):
         return health_factor
 
     def get_ltv(self, collateral_tkn: str, debt_tkn: str, e_mode: str = 'None') -> float:
-        if self.assets[collateral_tkn].emode_label == self.assets[debt_tkn].emode_label == e_mode != '' != 'None':
+        if self.assets[collateral_tkn].emode_label == self.assets[debt_tkn].emode_label == e_mode and '' != e_mode != 'None':
             return self.assets[collateral_tkn].emode_ltv
         else:
             return self.assets[collateral_tkn].ltv
 
     def get_liquidation_bonus(self, collateral_tkn: str, debt_tkn: str, e_mode: str = 'None') -> float:
-        if self.assets[collateral_tkn].emode_label == self.assets[debt_tkn].emode_label == e_mode:
+        if self.assets[collateral_tkn].emode_label == self.assets[debt_tkn].emode_label == e_mode and '' != e_mode != 'None':
             return self.assets[collateral_tkn].emode_liquidation_bonus
         else:
             return self.assets[collateral_tkn].liquidation_bonus
 
     def get_liquidation_threshold(self, collateral_tkn, debt_tkn, e_mode: str = 'None') -> float:
         """Get the liquidation threshold for a collateral-debt asset pair."""
-        if self.assets[collateral_tkn].emode_label == self.assets[debt_tkn].emode_label == e_mode:
+        if self.assets[collateral_tkn].emode_label == self.assets[debt_tkn].emode_label == e_mode and '' != e_mode != 'None':
             return self.assets[collateral_tkn].emode_liquidation_threshold
         else:
             return self.assets[collateral_tkn].liquidation_threshold
