@@ -130,7 +130,7 @@ def test_swap_stableswap(assets: list[float], trade_size_mult: float):
     # withdraw USDT
     stablepool_copy.withdraw_asset(agent2, buy_quantity, "USDT")
 
-    for token in omnipool.asset_list:
+    for token in omnipool.liquidity:
         if omnipool.liquidity[token] != omnipool_copy.liquidity[token]:
             raise ValueError(f"omnipool liquidity {omnipool.liquidity[token]} != {omnipool_copy.liquidity[token]}")
         if omnipool.lrna[token] != omnipool_copy.lrna[token]:
