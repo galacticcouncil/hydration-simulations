@@ -229,7 +229,7 @@ def get_stableswap_data_by_block(
         pool_id: int,
         block_no: int
 ):
-    return get_stableswap_asset_data(pool_id, block_no, block_no)[0]
+    return get_stableswap_asset_data(pool_id, block_no-100, block_no)[-1]
 
 
 def get_latest_stableswap_data(
@@ -267,7 +267,7 @@ def get_latest_stableswap_data(
 
     for asset in pool_data['stableswapAssetDataByPoolId']['nodes']:
         asset_id = asset['assetId']
-        balance = int(asset['balances']['d'][0]) / (10 ** asset_dict[asset_id].decimals)
+        balance = int(asset['balances']['d'][0]) / (10 ** asset_dict[str(asset_id)].decimals)
         pool_data_formatted['liquidity'][asset_id] = balance
     return pool_data_formatted
 
@@ -679,8 +679,8 @@ def get_omnipool_trades(
         trade['assetFee'] = float(trade['assetFeeAmount']) / (trade['amountOut'] + trade['assetFeeAmount'])
         if trade['hubAmountOut'] > 0:
             trade['protocolFee'] = float(trade['protocolFeeAmount']) / trade['hubAmountOut']
-        else:
-            pass
+        if trade['amountIn'] > 0:
+            trade['asset_fee'] = float(trade['assetFeeAmount']) / (float(trade['amountOut']) + float(trade['assetFeeAmount']))
         trade['block_number'] = trade.pop('paraBlockHeight')
     return data_all
 
@@ -861,10 +861,6 @@ def get_executed_trades(min_block: int, max_block: int, asset_ids: list[str] = N
             'output_amount': int(node['amount']) / (10 ** asset_info[node['assetId']].decimals),
             'all_involved_asset_ids': [y for y in x['allInvolvedAssetIds']]
         }
-        if float(node['hubAmountOut']) > 0:
-            next_trade['protocol_fee'] = float(node['protocolFeeAmount']) / float(node['hubAmountOut'])
-        if float(node['amountIn']) > 0:
-            next_trade['asset_fee'] = float(node['assetFeeAmount']) / (float(node['amountOut']) + float(node['assetFeeAmount']))
         trade_data.append(next_trade)
 
     return trade_data
@@ -925,11 +921,11 @@ def get_stableswap_liquidity_events(pool_id: int, min_block: int, max_block: int
     return data_all
 
 
-def download_stableswap_exec_prices(pool_id: int, tkn_id: int, min_block: int, max_block: int, path: str):
+def download_stableswap_exec_prices(pool_id: int, tkn_id: str, min_block: int, max_block: int, path: str):
     data = get_stableswap_liquidity_events(pool_id, min_block, max_block)
     asset_info = get_asset_info_by_ids([tkn_id, pool_id])
     decimals_tkn_id = asset_info[tkn_id].decimals
-    decimals_pool_id = asset_info[pool_id].decimals
+    decimals_pool_id = asset_info[str(pool_id)].decimals
     prices_by_block = {}
     for tx in data:
         liq_data = tx['stableswapAssetLiquidityAmountsByLiquidityActionId']['nodes']
@@ -946,7 +942,7 @@ def download_stableswap_exec_prices(pool_id: int, tkn_id: int, min_block: int, m
         json.dump(avg_price_by_block, f)
 
 
-def download_omnipool_spot_prices(tkn_id: int, denom_id: int, min_block: int, max_block: int, path: str):
+def download_omnipool_spot_prices(tkn_id: str, denom_id: str, min_block: int, max_block: int, path: str):
     data = get_omnipool_asset_data(min_block, max_block, [denom_id, tkn_id])
     # assert len(data) == 2 * (max_block - min_block + 1)
     if len(data) != 2 * (max_block - min_block + 1):
@@ -976,7 +972,7 @@ def download_omnipool_spot_prices(tkn_id: int, denom_id: int, min_block: int, ma
         json.dump(prices, f)
 
 
-def get_omnipool_swap_fees_one_query(tkn_id: int, min_block: int, max_block: int):
+def get_omnipool_swap_fees_one_query(tkn_id: str, min_block: int, max_block: int):
 
     query = """
     query OmnipoolSwapsByAssetId(
@@ -1033,7 +1029,7 @@ def get_omnipool_swap_fees_one_query(tkn_id: int, min_block: int, max_block: int
                 fee_pct = fee_amount / (output_amount + fee_amount)
                 fee_dict['fee_pct'] = fee_pct
                 asset_fee_data.append(fee_dict)
-            elif asset_id == 1:  # 1 is the hub asset ID
+            elif asset_id == "1":  # 1 is the hub asset ID
                 fee_pct = fee_amount / output_amount if output_amount > 0 else 0
                 fee_dict['fee_pct'] = fee_pct
                 hub_fee_data.append(fee_dict)
@@ -1041,7 +1037,7 @@ def get_omnipool_swap_fees_one_query(tkn_id: int, min_block: int, max_block: int
 
 # TODO: ^v these two functions could be merged into one
 
-def get_omnipool_swap_fees(tkn_id: int, min_block: int, max_block: int, max_block_count: int = 50000):
+def get_omnipool_swap_fees(tkn_id: str, min_block: int, max_block: int, max_block_count: int = 50000):
     min_block_temp = min_block
     max_block_temp = min(min_block + max_block_count - 1, max_block)
     asset_fee_data = []
@@ -1099,7 +1095,7 @@ def bucket_values_per_block(bucket_ct: int, data, min_block: int = None, max_blo
     ]
 
 
-def download_acct_trades(asset_id: int, acct: str, path: str, min_block: int = None, max_block: int = None):
+def download_acct_trades(asset_id: str, acct: str, path: str, min_block: int = None, max_block: int = None):
 
     if min_block is None:
         min_block = 0
@@ -1166,8 +1162,8 @@ def download_acct_trades(asset_id: int, acct: str, path: str, min_block: int = N
         if (len(x['routeTradeInputs']['nodes']) == 1 and len(x['routeTradeOutputs']['nodes']) == 1
             and x['routeTradeInputs']['nodes'][0]['assetId'] in [str(asset_id), '10']
             and x['routeTradeOutputs']['nodes'][0]['assetId'] in [str(asset_id), '10']):
-            input_asset_id = int(x['routeTradeInputs']['nodes'][0]['assetId'])
-            output_asset_id = int(x['routeTradeOutputs']['nodes'][0]['assetId'])
+            input_asset_id = x['routeTradeInputs']['nodes'][0]['assetId']
+            output_asset_id = x['routeTradeOutputs']['nodes'][0]['assetId']
             found_hub = False
             for y in x['swaps']['nodes']:
                 outputs = y['swapOutputs']['nodes']
@@ -1183,8 +1179,8 @@ def download_acct_trades(asset_id: int, acct: str, path: str, min_block: int = N
                         'input_amount': int(x['routeTradeInputs']['nodes'][0]['amount']) / (10 ** asset_info[input_asset_id].decimals),
                         'output_asset_id': output_asset_id,
                         'output_amount': int(x['routeTradeOutputs']['nodes'][0]['amount']) / (10 ** asset_info[output_asset_id].decimals),
-                        'hub_fee': hub_fees / (10 ** asset_info[1].decimals),
-                        'hub_amount': hub_amt / (10 ** asset_info[1].decimals),
+                        'hub_fee': hub_fees / (10 ** asset_info['1'].decimals),
+                        'hub_amount': hub_amt / (10 ** asset_info['1'].decimals),
                     }
                     trades.append(trade)
 
