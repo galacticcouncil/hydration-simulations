@@ -138,7 +138,7 @@ def back_and_forth(
     def strategy(state: GlobalState, agent_id: str):
         omnipool: OmnipoolState = state.pools[pool_id]
         agent: Agent = state.agents[agent_id]
-        assets = list(set(agent.asset_list) & set(omnipool.asset_list))
+        assets = list(set(agent.asset_list) & set(omnipool.liquidity.keys()))
         for asset in assets:
             # asset = agent.asset_list[i]
             dr = percentage / 2 * omnipool.liquidity[asset]
@@ -1102,7 +1102,7 @@ def liquidate_cdps(pool_id: str = None, iters: int = 16) -> TradeStrategy:
         for pool in list(pools):
             if hasattr(pool, 'exchanges'):
                 pools |= set(pool.exchanges.values())
-        mms = [pool for pool in pools if isinstance(pool, MoneyMarket)]
+        mms = [pool for pool in state.pools.values() if isinstance(pool, MoneyMarket)]
         for mm in mms:
             for cdp in mm.cdps:
                 potential_liquidations = True
