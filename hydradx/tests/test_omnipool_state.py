@@ -265,7 +265,7 @@ def test_cash_out_accuracy(omnipool: oamm.OmnipoolState, share_price_ratio, lp_i
     cash_out = omnipool.cash_out(agent, market_prices)
 
     withdraw_state, withdraw_agent = omnipool.copy(), agent.copy()
-    for tkn in omnipool.asset_list:
+    for tkn in omnipool.liquidity:
         withdraw_state.remove_liquidity(
             agent=withdraw_agent,
             tkn_remove=tkn,
