@@ -858,7 +858,7 @@ def test_calculate_buy_from_sell():
     )
     agent = Agent(enforce_holdings=False)
     routes = router.find_routes(tkn_buy='ETH', tkn_sell='BTC', direction='sell')
-    eth_btc_route = router.find_best_route(tkn_buy='ETH', tkn_sell='BTC')
+    eth_btc_route = router.find_best_route(tkn_buy='ETH', tkn_sell='BTC', sell_quantity=15)
     print("route prices:", {", ".join([swap.exchange for swap in route]): router.price_route(route=route, direction="sell") for route in routes})
     print("route calcs:", {", ".join([swap.exchange for swap in route]): router.calculate_buy_from_sell(
         tkn_sell="BTC", tkn_buy="ETH", route=route, sell_quantity=1
