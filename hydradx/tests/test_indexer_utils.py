@@ -36,8 +36,8 @@ def test_get_current_stableswap_pools():
 def test_get_omnipool_state():
     omnipool = get_current_omnipool(8400000)
     assert isinstance(omnipool, OmnipoolState)
-    assert isinstance([omnipool.asset_fee(tkn) for tkn in omnipool.asset_list], list)
-    assert isinstance([omnipool.lrna_fee(tkn) for tkn in omnipool.asset_list], list)
+    assert isinstance([omnipool.asset_fee(tkn) for tkn in omnipool.liquidity], list)
+    assert isinstance([omnipool.lrna_fee(tkn) for tkn in omnipool.liquidity], list)
 
 
 def test_get_omnipool_router():
@@ -56,10 +56,10 @@ def test_get_fee_history():
 
 
 def test_get_executed_trades():
-    asset_ids = [5, 10]
+    asset_ids = ["5", "10"]
     min_block_id = 8400000
     max_block_id = 8401000
-    data = get_executed_trades(asset_ids, min_block_id, max_block_id)
+    data = get_executed_trades(min_block_id, max_block_id, asset_ids)
     assert data[0]['block_number'] == 8400025
     assert 1920 < data[0]['input_amount'] < 1930
 
@@ -76,7 +76,7 @@ def test_get_stableswap_liquidity_events():
 def test_download_stableswap_exec_prices():
     from hydradx.model.indexer_utils import download_stableswap_exec_prices
     pool_id = 102
-    tkn_id = 10
+    tkn_id = "10"
     min_block_id = 6400000
     max_block_id = min_block_id + 1000
 
@@ -99,9 +99,9 @@ def test_get_stableswap_pools():
 
 def test_download_omnipool_spot_prices():
     from hydradx.model.indexer_utils import download_omnipool_spot_prices
-    denom_id = 102
+    denom_id = "102"
     # tkn_id = 1000765  # tBTC
-    tkn_id = 1000624  # AAVE
+    tkn_id = "1000624"  # AAVE
     min_block_id = 7111661
     max_block_id = min_block_id + 1000
     step_size = 50000
@@ -118,7 +118,7 @@ def test_download_omnipool_spot_prices():
 
 def test_get_omnipool_swap_fees():
     from hydradx.model.indexer_utils import get_omnipool_swap_fees
-    tkn_id = 5
+    tkn_id = "5"
     min_block_id = 8000000
     max_block_id = 8001000
 
@@ -136,7 +136,7 @@ def test_get_asset_info_by_ids():
 
 def test_download_acct_trades():
     from hydradx.model.indexer_utils import download_acct_trades
-    tkn_id = 5
+    tkn_id = "5"
     base_dir = Path(__file__).resolve().parents[1]
     path = str(base_dir / "apps" / "fees") + "/"
     acct = "0x7279fcf9694718e1234d102825dccaf332f0ea36edf1ca7c0358c4b68260d24b"
