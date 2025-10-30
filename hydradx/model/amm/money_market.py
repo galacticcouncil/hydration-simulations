@@ -61,7 +61,7 @@ class MoneyMarketAsset:
             emode_liquidation_bonus: float = None,
             emode_liquidation_threshold: float = None,
             emode_ltv: float = None,
-            emode_label: str = '',
+            emode_label: str = 'None',
             liquidity: float = float('inf'),
             supply_cap: float = float('inf')
     ):
@@ -226,7 +226,7 @@ class MoneyMarket(Exchange):
         return health_factor
 
     def get_ltv(self, collateral_tkn: str, debt_tkn: str, e_mode: str = 'None') -> float:
-        if self.assets[collateral_tkn].emode_label == self.assets[debt_tkn].emode_label == e_mode:
+        if self.assets[collateral_tkn].emode_label == self.assets[debt_tkn].emode_label == e_mode != '' != 'None':
             return self.assets[collateral_tkn].emode_ltv
         else:
             return self.assets[collateral_tkn].ltv
