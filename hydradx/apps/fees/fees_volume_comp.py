@@ -9,10 +9,10 @@ from hydradx.model.indexer_utils import get_fee_history, get_asset_info_by_ids
 c1, c2, c3 = st.columns(3)
 
 with c1:
-    asset_id = st.number_input(
+    asset_id = str(st.number_input(
         "Asset ID",
         min_value=0, max_value=99999999, value=5, step=1, key="asset_id", format="%d",
-    )
+    ))
 
 with c2:
     min_block = st.number_input(
