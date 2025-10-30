@@ -32,7 +32,7 @@ class DynamicFee:
             self.current = {}
         else:
             self.current = current
-        self.last_updated = last_updated or {tkn: 0 for tkn in self.current}
+        self.last_updated = last_updated if last_updated is not None else {}
         self.liquidity_at_last_update = liquidity if liquidity is not None else {}
         self.volume_at_last_update = net_volume if net_volume is not None else {}
 
