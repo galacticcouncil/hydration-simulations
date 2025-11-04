@@ -467,9 +467,8 @@ def test_omnipool_liquidate_cdp_not_profitable():
     collat_ratio = 5.0
     collateral_amt = 2000
     omnipool = omnipool_setup_for_liquidation_testing()
-    for tkn in omnipool.liquidity:  # reduce TVL to increase slippage for the test
-        omnipool.liquidity[tkn] /= 2000
     dot_price = omnipool.price("DOT", "USDT")
+    omnipool.lrna['DOT'] /= 2  # manipulate omnipool so that liquidation is not profitable
 
     debt_amt = collat_ratio * collateral_amt
     init_cdp = CDP(debt={'USDT': mpf(debt_amt)}, collateral={'DOT': mpf(collateral_amt)})
