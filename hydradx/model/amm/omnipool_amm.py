@@ -354,8 +354,7 @@ class OmnipoolState(Exchange):
             self.current_block.withdrawals[tkn] = 0
             self.current_block.volume_in[tkn] = 0
             self.current_block.volume_out[tkn] = 0
-            self.current_block.lrna_in[tkn] = 0
-            self.current_block.lrna_out[tkn] = 0
+            self.current_block.lrna[tkn] = self.lrna[tkn]
         for oracle in self.oracles.values() if self.oracles else []:
             oracle.liquidity[tkn] = self.liquidity[tkn]
             oracle.price[tkn] = self.lrna[tkn] / self.liquidity[tkn]
