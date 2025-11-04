@@ -304,12 +304,12 @@ def test_borrow_fails():
     agent = Agent(holdings={collateral_asset: collat_amt})
     mm = MoneyMarket(
         assets=[
-            MoneyMarketAsset(borrow_asset, 1, liquidation_bonus=0.01, liquidation_threshold=0.7),
-            MoneyMarketAsset(collateral_asset, 10, liquidation_bonus=0.01, liquidation_threshold=0.7),
-            MoneyMarketAsset("BTC", 0, liquidation_bonus=0.01, liquidation_threshold=0.7),
+            MoneyMarketAsset(borrow_asset, price=1, liquidation_bonus=0.01, liquidation_threshold=0.7),
+            MoneyMarketAsset(collateral_asset, price=10, liquidation_bonus=0.01, liquidation_threshold=0.7),
+            MoneyMarketAsset("BTC", price=100000, liquidation_bonus=0.01, liquidation_threshold=0.7),
         ]
     )
-    borrow_amt = collat_amt * 10 * 0.65
+    borrow_amt = collat_amt * 10 * 0.75
     mm.borrow(agent, borrow_asset, collateral_asset, borrow_amt, collat_amt)
     if not mm.fail:
         raise AssertionError('Borrowing more than LTV limit should fail.')
@@ -435,10 +435,10 @@ def test_omnipool_liquidate_cdp_oracle_equals_spot_small_cdp(collateral_amt: flo
         raise ValueError('Money market is not valid after liquidation')
 
     if treasury_agent.holdings['DOT'] > penalty * (init_cdp.collateral['DOT'] - cdp.collateral['DOT']):
-        raise  # treasury should collect at most penalty
+        raise ValueError("Treasury should collect at most penalty")
     for tkn in treasury_agent.holdings:
         if tkn not in cdp.collateral and treasury_agent.get_holdings(tkn) != 0:
-            raise  # treasury_agent should accrue no other token
+            raise ValueError("Treasury should not have any holdings of other tokens")
 
 
 def test_omnipool_liquidate_cdp_delta_debt_too_large():
