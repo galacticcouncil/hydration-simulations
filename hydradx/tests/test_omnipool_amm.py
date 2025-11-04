@@ -2995,3 +2995,24 @@ def test_trade_to_price():
         price = omnipool.lrna_price('USD')
         assert price == pytest.approx(expected_price, rel=1e-15)
 
+
+def test_slip_fee_works():
+    omnipool = OmnipoolState(
+        tokens={
+            'HDX': {'liquidity': mpf(1000000), 'LRNA': mpf(1000000)},
+            'USD': {'liquidity': mpf(1000000), 'LRNA': mpf(1000000)}
+        },
+        asset_fee=0.0025,
+        lrna_fee=0.0005,
+        slip_factor=1
+    )
+
+    feeless_pool = omnipool.copy()
+    feeless_pool.slip_factor = 0
+    agent1 = Agent(enforce_holdings=False)
+    agent2 = Agent(enforce_holdings=False)
+    omnipool.swap(agent1, tkn_sell='USD', tkn_buy='HDX', buy_quantity=mpf(1000))
+    # agent2 should get a better result due to no slip fee (higher holdings of USD after the trade)
+    feeless_pool.swap(agent2, tkn_sell='USD', tkn_buy='HDX', buy_quantity=mpf(1000))
+    if agent1.holdings['USD'] >= agent2.holdings['USD']:
+        raise AssertionError('Slip fee did not reduce output amount.')
