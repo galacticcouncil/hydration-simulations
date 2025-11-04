@@ -69,7 +69,7 @@ class OmnipoolState(Exchange):
                  lrna_fee_destination: Agent = None,
                  dynamic_fee_precision: int = 20,
                  slip_factor: float = None,
-                 minimum_slip_fee: float = 0.001,
+                 minimum_slip_fee: float = 0.0,
                  ):
         """
         tokens should be a dict in the form of [str: dict]
@@ -504,6 +504,11 @@ class OmnipoolState(Exchange):
             sd = disc ** 0.5
             u = (2 * r) / (-q - (sd if q >= 0 else -sd))
             x = C - u
+
+        if not (0 < x < current_h2o):
+            return math.inf
+        if (last_block_h2o + (C - x)) <= 0:
+            return math.inf
 
         sell_quantity = (L * x) / (current_h2o - x)
         return sell_quantity
