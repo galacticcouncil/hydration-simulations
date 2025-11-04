@@ -1132,7 +1132,7 @@ def liquidate_cdps(pool_id: str = None, iters: int = 16) -> TradeStrategy:
                             if pool.buy_spot(debt_tkn, collateral_tkn) > collateral_max / debt_max:
                                 # no profitable liquidation possible
                                 continue
-                            debt_paid = debt_max
+                            debt_paid = min(debt_max, pool.buy_limit(tkn_buy=debt_tkn, tkn_sell=collateral_tkn))
                             profit = collateral_max - pool.calculate_sell_from_buy(
                                 tkn_buy=debt_tkn, tkn_sell=collateral_tkn, buy_quantity=debt_paid
                             )
@@ -1151,7 +1151,7 @@ def liquidate_cdps(pool_id: str = None, iters: int = 16) -> TradeStrategy:
                                 if profit_up > profit:
                                     debt_paid = debt_up
                                     profit = profit_up
-                                elif profit_down > profit:
+                                elif profit_down > profit or profit_down == -float('inf'):
                                     debt_paid = debt_down
                                     profit = profit_down
                                 else:
