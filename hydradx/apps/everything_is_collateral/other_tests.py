@@ -6,8 +6,6 @@ import copy
 import pytest
 import numpy as np
 
-from hydradx.apps.hollar.hsm import buy_price
-
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../"))
 sys.path.append(project_root)
 
@@ -57,16 +55,16 @@ def remove_readd(pool: OmnipoolState, agent: Agent):
         agent=agent,
         tkn_remove='HDX'
     )
-    print(f"LP removed liquidity as {agent.all_holdings()}")
+    # print(f"LP removed liquidity as {agent.all_holdings()}")
     if agent.get_holdings('LRNA') > 0:
         start_hdx = agent.get_holdings('HDX')
         start_lrna = agent.get_holdings('LRNA')
         hdx_at_spot_price = 1 / pool.lrna_price('HDX') * start_lrna
         pool.swap(agent=agent, tkn_sell='LRNA', tkn_buy='HDX', sell_quantity=agent.get_holdings('LRNA'))
         hdx_back = agent.get_holdings('HDX') - start_hdx
-        print(f"LP swapped {start_lrna} LRNA to HDX, losing {hdx_at_spot_price - hdx_back} HDX in fees and slippage")
-    print(
-        f"LP adds {round(agent.get_holdings('HDX'), 3)} HDX back to pool ({round(pool.liquidity['HDX'], 3)} HDX) as liquidity")
+        # print(f"LP swapped {start_lrna} LRNA to HDX, losing {hdx_at_spot_price - hdx_back} HDX in fees and slippage")
+    # print(
+    #     f"LP adds {round(agent.get_holdings('HDX'), 3)} HDX back to pool ({round(pool.liquidity['HDX'], 3)} HDX) as liquidity")
     pool.add_liquidity(
         agent=agent,
         tkn_add='HDX',
@@ -415,7 +413,6 @@ def scenario_3():
     ax.set_ylabel('LP loss as a percent of deposit')
     ax.legend()
     st.pyplot(fig)
-
 
 def scenario_4(block_number=None):
     max_block_number = 9300000  # get_current_block_height() - 1000
