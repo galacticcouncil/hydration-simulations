@@ -481,6 +481,8 @@ class OmnipoolState(Exchange):
             Qb = self.lrna[tkn_buy]
             af = self.asset_fee(tkn_buy)
             b = buy_quantity / (1.0 - af)
+            if b >= A:
+                return math.inf  # infeasible: not enough liquidity to buy this much
             D = (b * Qb) / (A - b)
 
         if tkn_sell == "LRNA":
