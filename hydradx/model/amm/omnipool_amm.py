@@ -515,7 +515,7 @@ class OmnipoolState(Exchange):
             return math.inf
         if tkn_sell != "LRNA":
             # in case we would like to do something in particular with this fee
-            slip_rate = self.compute_slip_fee(tkn_sell, -x)
+            slip_fee = x * self.compute_slip_fee(tkn_sell, -x)
 
         sell_quantity = (L * x) / (current_h2o - x)
         return sell_quantity
