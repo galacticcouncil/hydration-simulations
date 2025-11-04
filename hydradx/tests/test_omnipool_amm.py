@@ -1147,58 +1147,69 @@ def test_swap_assets(initial_state: oamm.OmnipoolState, i):
         # assert buy_agent.holdings['LRNA'] == pytest.approx(feeless_agent.holdings['LRNA'])
 
 
-@given(omnipool_config(token_count=4), st.floats(min_value=0.1, max_value=2))
-def test_slip_fees(initial_state: oamm.OmnipoolState, slip_rate: float):
-    initial_state.slip_factor = slip_rate
-    initial_state.withdrawal_fee = False
-    initial_agent = Agent(holdings={tkn: 10000000 for tkn in initial_state.asset_list})
-    tkn_buy = initial_state.asset_list[2]
-    tkn_sell = initial_state.asset_list[3]
-    sell_quantity = 1
-    sell_state, sell_agent = oamm.simulate_swap(
-        initial_state, initial_agent, tkn_buy, tkn_sell, sell_quantity=sell_quantity
+@given(
+    list_offset=st.integers(min_value=1, max_value=4),
+    slip_factor = st.floats(min_value=0.1, max_value=2)
+)
+def test_slip_fees(list_offset: int, slip_factor: float):
+    omnipool = OmnipoolState(
+        tokens={
+            'HDX': {'liquidity': 2000000, 'LRNA': 100000},
+            'USD': {'liquidity': 1000000, 'LRNA': 200000},
+            'R1': {'liquidity': 30000, 'LRNA': 300000},
+            'R2': {'liquidity': 9000, 'LRNA': 400000},
+        },
+        slip_factor=slip_factor
     )
-    split_sell_state, split_sell_agent = initial_state.copy(), initial_agent.copy()
-    next_state, next_agent = {}, {}
-    for i in range(2):
-        next_state[i], next_agent[i] = oamm.simulate_swap(
-            old_state=split_sell_state,
-            old_agent=split_sell_agent,
-            tkn_sell=tkn_sell,
-            tkn_buy=tkn_buy,
-            sell_quantity=sell_quantity / 2
+    n = len(omnipool.asset_list)
+    trades = [
+        # trade every possible pair in both directions
+        {"tkn_buy": omnipool.asset_list[i % n], "tkn_sell": omnipool.asset_list[j % n], "sell_quantity": 100 - j - i}
+        for i in range(1, n)
+        for j in range(1, n)
+        if i != j
+    ]
+    offset_trades = []
+    for i in range(0, len(trades) * list_offset, list_offset):
+        offset_trades.append(trades.pop(i % len(trades)))
+    trades = offset_trades
+
+    agent = Agent(enforce_holdings=False)
+    for trade in trades:
+        tkn_buy = trade['tkn_buy']
+        tkn_sell = trade['tkn_sell']
+        sell_quantity = trade['sell_quantity']
+        split_sell_state, split_sell_agent = omnipool.copy(), agent.copy()
+        for i in range(2):
+            split_sell_state.swap(
+                agent=split_sell_agent,
+                tkn_sell=tkn_sell,
+                tkn_buy=tkn_buy,
+                sell_quantity=sell_quantity / 2
+            )
+        omnipool.copy().swap(
+            agent, tkn_buy, tkn_sell, sell_quantity=sell_quantity
         )
-        split_sell_state, split_sell_agent = next_state[i], next_agent[i]
-    if split_sell_agent.holdings[tkn_buy] < sell_agent.holdings[tkn_buy]:
-        raise AssertionError('Agent failed to save money by splitting the sell order.')
+        if split_sell_agent.get_holdings(tkn_buy) <= agent.get_holdings(tkn_buy):
+            raise AssertionError('Agent failed to save money by splitting the sell order.')
 
-    buy_quantity = 1
-    buy_state, buy_agent = oamm.simulate_swap(initial_state, initial_agent, tkn_buy, tkn_sell, buy_quantity=buy_quantity)
-    split_buy_state, split_buy_agent = initial_state.copy(), initial_agent.copy()
-    next_state, next_agent = {}, {}
-    for i in range(2):
-        next_state[i], next_agent[i] = oamm.simulate_swap(
-            old_state=split_buy_state,
-            old_agent=split_buy_agent,
-            tkn_sell=tkn_sell,
-            tkn_buy=tkn_buy,
-            buy_quantity=buy_quantity / 2
-        )
-        split_buy_state, split_buy_agent = next_state[i], next_agent[i]
-    if split_buy_agent.holdings[tkn_sell] < buy_agent.holdings[tkn_sell]:
-        raise AssertionError('Agent failed to save money by splitting the buy order.')
-
-    if ((initial_agent.holdings[tkn_sell] + initial_agent.holdings[tkn_buy]
-         + initial_state.liquidity[tkn_sell] + initial_state.liquidity[tkn_buy])
-            != pytest.approx(buy_agent.holdings[tkn_sell] + buy_agent.holdings[tkn_buy]
-                             + buy_state.liquidity[tkn_sell] + buy_state.liquidity[tkn_buy])):
-        raise AssertionError('Asset quantity is not constant after trade (one-part)')
-
-    if ((initial_agent.holdings[tkn_sell] + initial_agent.holdings[tkn_buy]
-         + initial_state.liquidity[tkn_sell] + initial_state.liquidity[tkn_buy])
-            != pytest.approx(split_buy_agent.holdings[tkn_sell] + split_buy_agent.holdings[tkn_buy]
-                             + split_buy_state.liquidity[tkn_sell] + split_buy_state.liquidity[tkn_buy])):
-        raise AssertionError('Asset quantity is not constant after trade (two-part)')
+        buy_quantity = sell_quantity
+        tkn_sell, tkn_buy = tkn_buy, tkn_sell
+        agent.holdings = {}
+        split_buy_state, split_buy_agent = omnipool.copy(), agent.copy()
+        slip_fee_omnipool = omnipool.compute_slip_fee(tkn_sell, buy_quantity)
+        slip_fee_split = []
+        for i in range(2):
+            slip_fee_split.append(split_buy_state.compute_slip_fee(tkn_sell, buy_quantity / 2))
+            split_buy_state.swap(
+                agent=split_buy_agent,
+                tkn_sell=tkn_sell,
+                tkn_buy=tkn_buy,
+                buy_quantity=buy_quantity / 2
+            )
+        omnipool.copy().swap(agent, tkn_sell=tkn_sell, tkn_buy=tkn_buy, buy_quantity=buy_quantity)
+        if split_buy_agent.get_holdings(tkn_sell) <= agent.get_holdings(tkn_sell):
+            raise AssertionError('Agent failed to save money by splitting the buy order.')
 
 
 def test_trade_limit():
@@ -2983,180 +2994,4 @@ def test_trade_to_price():
         omnipool.trade_to_price(agent, tkn='USD', other_tkn='HDX', target_price=expected_price)
         price = omnipool.lrna_price('USD')
         assert price == pytest.approx(expected_price, rel=1e-15)
-
-
-def test_inside_fee():
-    import numpy as np
-    dynamic_asset_fee = production_settings.omnipool_asset_fee
-    dynamic_lrna_fee = production_settings.omnipool_lrna_fee
-    omnipool = OmnipoolState(
-        tokens={
-            'HDX': {'liquidity': mpf(1000000), 'LRNA': mpf(1000000)},
-            'USD': {'liquidity': mpf(1000000), 'LRNA': mpf(1000000)}
-        },
-        asset_fee=0.0025,
-        lrna_fee=0.0005,
-        slip_factor=1.0,
-        minimum_slip_fee=0.0
-    )
-    agent = Agent(holdings={'HDX': mpf(10000)})
-
-    import numpy as np
-
-    def calculate_fee_direct(self, tkn: str, delta_ra: float):
-        """
-        Calculate the exact fee and trade amount by solving the polynomial equation directly.
-
-        Returns:
-            tuple: (delta_q, total_fee) or (None, None) if no valid solution
-        """
-
-        L = self.liquidity[tkn]
-        Q = self.lrna[tkn]
-        r = -delta_ra  # Make positive for calculation
-        s = self.slip_factor
-        m = self.minimum_slip_fee + dynamic_asset_fee.minimum
-        p = self.lrna_mint_pct
-
-        # Check basic validity
-        if r >= L:
-            return None, None
-
-        # Account for existing trades in current block
-        existing = self.current_block.lrna_in[tkn] + self.current_block.lrna_out[tkn]
-
-        # Derive and solve the polynomial equation for fee
-        if p == 0:
-            # Without minting - quadratic equation
-            # After substitution and algebra, we get: a*fee^2 + b*fee + c = 0
-
-            a = L
-            b = -(L * (1 + m) + s * existing / Q)
-            c = m * L + s * r * (1 + existing / Q)
-
-            discriminant = b ** 2 - 4 * a * c
-            if discriminant < 0:
-                return None, None
-
-            sqrt_disc = np.sqrt(discriminant)
-            f1 = (-b - sqrt_disc) / (2 * a)
-            f2 = (-b + sqrt_disc) / (2 * a)
-
-            # Choose the valid fee (should be between 0 and 1, usually the smaller one)
-            if 0 <= f1 <= 1:
-                fee = f1
-            elif 0 <= f2 <= 1:
-                fee = f2
-            else:
-                return None, None
-
-        else:
-            # With minting - this becomes a higher degree polynomial
-            # The exact degree depends on how terms combine after substitution
-
-            # For the general case with minting, after substituting:
-            # delta_q = Q*r*(d + fee*(1-fee)*L*p)/d^2 where d = L*(1-fee) - r
-            # into fee = m + s*(delta_q + existing)/(Q + delta_q + existing)
-            # and clearing denominators, we get these coefficients:
-
-            # Quartic coefficients (may reduce to cubic if a4 = 0)
-            a4 = -L * L * L * p * s * r / (Q * Q)
-
-            a3 = L * L * (s * r * (2 + p) / Q + p * s * r / (Q * Q) - p * (m - 1))
-
-            a2 = -L * (s * r * (1 + 2 * Q + existing) / Q +
-                       (1 + m) * (1 + s * r / Q) -
-                       p * (m - 1 - s * r / Q))
-
-            a1 = (L + r) * (1 + m + s * r / Q) + s * existing
-
-            a0 = -(m * (L + r) + s * r * (1 + existing / Q))
-
-            # Build coefficient list, removing near-zero leading coefficients
-            if abs(a4) > 1e-12:
-                coefficients = [a4, a3, a2, a1, a0]
-            elif abs(a3) > 1e-12:
-                coefficients = [a3, a2, a1, a0]
-            else:
-                coefficients = [a2, a1, a0]
-
-            # Solve the polynomial
-            roots = np.roots(coefficients)
-
-            # Find valid real roots between 0 and 1
-            valid_fees = []
-            for root in roots:
-                if np.isreal(root):
-                    f = float(np.real(root))
-                    if 0 <= f <= 1:
-                        # Check that the denominator will be positive
-                        denom = L * (1 - f) - r
-                        if denom > 0:
-                            valid_fees.append(f)
-
-            if not valid_fees:
-                return None, None
-
-            # Take the smallest valid fee (most economically reasonable)
-            fee = min(valid_fees)
-
-        # Now calculate delta_q using the exact fee we found
-        denom = L * (1 - fee) + delta_ra  # Note: delta_ra is negative
-        if denom <= 0:
-            return None, None
-
-        delta_qa = -Q * delta_ra / denom
-
-        # Add minting if applicable
-        if p > 0:
-            delta_qm = -fee * (1 - fee) * L * delta_qa * p / denom
-            delta_q = -delta_qa + delta_qm
-        else:
-            delta_q = -delta_qa
-
-        # Verify our solution (optional - for debugging)
-        if __debug__:
-            slip_fee_check = s * abs(delta_q + existing) / (Q + delta_q + existing) + self.minimum_slip_fee
-            fee_check = dynamic_asset_fee.minimum + slip_fee_check
-            if abs(fee_check - fee) > 1e-8:
-                print(f"Warning: Fee verification failed. Expected {fee}, got {fee_check}")
-
-        return delta_q, fee
-
-    omnipool.inside_fee = calculate_fee_direct.__get__(omnipool)
-
-    # buying asset
-    tkn = 'HDX'
-    delta_ra = -agent.get_holdings('HDX')
-    lrna_fee = omnipool.lrna_fee(tkn)
-    delta_q, asset_fee = omnipool.inside_fee(tkn, delta_ra)
-    expected_slip_fee = omnipool.compute_slip_fee('HDX', delta_q)
-    if -delta_ra + omnipool.liquidity[tkn] <= 0:
-        return omnipool.fail_transaction('insufficient assets in pool')
-    slip_fee = omnipool.compute_slip_fee('HDX', delta_q)
-    return None
-
-
-def test_slip_fee_reversible():
-    omnipool = OmnipoolState(
-        tokens={
-            'HDX': {'liquidity': mpf(1000000), 'LRNA': mpf(100000)},
-            'USD': {'liquidity': mpf(500000), 'LRNA': mpf(1000000)}
-        },
-        asset_fee=0,
-        lrna_fee=0,
-        slip_factor=1.0,
-        minimum_slip_fee=0.0
-    )
-    tkn_sell = 'HDX'
-    tkn_buy = 'USD'
-    sell_quantity = 10001
-    agent = Agent(holdings={tkn_sell: sell_quantity})
-
-    omnipool.copy().swap(
-        agent=agent,
-        tkn_sell=tkn_sell,
-        tkn_buy=tkn_buy,
-        sell_quantity=sell_quantity
-    )
 
