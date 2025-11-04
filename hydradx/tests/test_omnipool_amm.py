@@ -2331,8 +2331,8 @@ def test_buy_sell_spot(
         raise AssertionError(f'sell_spot_usd {hdx_per_usd} != ex_price_usd {ex_price_usd}')
 
 
-def test_LRNA_price_LRNA():
-    '''Test that we can call lrna_price with input LRNA and get 1'''
+def test_lrna_price_lrna():
+    """Test that we can call lrna_price with input LRNA and get 1"""
     initial_state = oamm.OmnipoolState(
         tokens={
             'HDX': {'liquidity': mpf(10000000000), 'LRNA': mpf(5000000)},
@@ -2351,7 +2351,7 @@ def test_LRNA_price_LRNA():
 
 @given(st.lists(asset_quantity_strategy, min_size=6, max_size=6),
        st.floats(min_value=0.0001, max_value=0.1, exclude_min=True))
-def test_price_LRNA(amts: list, asset_fee: float):
+def test_price_lrna(amts: list, asset_fee: float):
     '''Tests the price function with LRNA as each input'''
 
     hdx_amt, usd_amt, dot_amt = mpf(amts[0]), mpf(amts[1]), mpf(amts[2])
@@ -2378,7 +2378,7 @@ def test_price_LRNA(amts: list, asset_fee: float):
 
 @given(st.lists(asset_quantity_strategy, min_size=6, max_size=6),
        st.floats(min_value=0.0001, max_value=0.1, exclude_min=True))
-def test_sell_spot_LRNA(amts: list, asset_fee: float):
+def test_sell_spot_lrna(amts: list, asset_fee: float):
     '''Tests sell_spot with LRNA as the sell_tkn'''
 
     hdx_amt, usd_amt, dot_amt = mpf(amts[0]), mpf(amts[1]), mpf(amts[2])
@@ -2402,7 +2402,7 @@ def test_sell_spot_LRNA(amts: list, asset_fee: float):
 
 @given(st.lists(asset_quantity_strategy, min_size=6, max_size=6),
        st.floats(min_value=0.0001, max_value=0.1, exclude_min=True))
-def test_buy_spot_LRNA(amts: list, asset_fee: float):
+def test_buy_spot_lrna(amts: list, asset_fee: float):
     '''Tests buy_spot with LRNA as the sell_tkn'''
 
     hdx_amt, usd_amt, dot_amt = mpf(amts[0]), mpf(amts[1]), mpf(amts[2])
@@ -2444,7 +2444,7 @@ def test_value_assets_without_equivalency_map():
 
 
 def test_no_preferred_stablecoin():
-    '''Tests Omnipool initialization, as well as value_assets and usd_price, with no preferred_stablecoin'''
+    """Tests Omnipool initialization, as well as value_assets and usd_price, with no preferred_stablecoin"""
     initial_state = oamm.OmnipoolState(
         tokens={
             'HDX': {'liquidity': mpf(1000000000), 'LRNA': mpf(100000000)},
