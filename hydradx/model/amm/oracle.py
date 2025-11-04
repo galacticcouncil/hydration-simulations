@@ -4,11 +4,10 @@ from .exchange import Exchange
 class Block:
     def __init__(self, input_state: Exchange):
         self.liquidity = {tkn: input_state.liquidity[tkn] for tkn in input_state.liquidity}
+        self.lrna = {tkn: input_state.lrna[tkn] if hasattr(input_state, 'lrna') else 0 for tkn in input_state.liquidity}
         self.price = {tkn: input_state.price(tkn) for tkn in input_state.liquidity}
         self.volume_in = {tkn: 0 for tkn in input_state.liquidity}
         self.volume_out = {tkn: 0 for tkn in input_state.liquidity}
-        self.lrna_in = {tkn: 0 for tkn in input_state.liquidity}
-        self.lrna_out = {tkn: 0 for tkn in input_state.liquidity}
         self.withdrawals = {tkn: 0 for tkn in input_state.liquidity}
         self.lps = {tkn: 0 for tkn in input_state.liquidity}
         self.asset_list = input_state.asset_list.copy()
