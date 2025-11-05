@@ -306,7 +306,7 @@ def test_borrow_fails():
         assets=[
             MoneyMarketAsset(borrow_asset, price=1, liquidation_bonus=0.01, liquidation_threshold=0.7),
             MoneyMarketAsset(collateral_asset, price=10, liquidation_bonus=0.01, liquidation_threshold=0.7),
-            MoneyMarketAsset("BTC", price=100000, liquidation_bonus=0.01, liquidation_threshold=0.7),
+            MoneyMarketAsset("BTC", price=0, liquidation_bonus=0.01, liquidation_threshold=0.7),
         ]
     )
     borrow_amt = collat_amt * 10 * 0.75
@@ -320,7 +320,7 @@ def test_borrow_fails():
         mm.borrow(agent, borrow_asset, "ETH", borrow_amt, collat_amt)
     with pytest.raises(Exception):  # should fail because borrow asset is not in liquidity
         mm.borrow(agent, "ETH", collateral_asset, borrow_amt, collat_amt)
-    with pytest.raises(Exception):  # should fail because of missing oracle
+    with pytest.raises(Exception):  # should fail because of missing price
         mm.borrow(agent, "BTC", collateral_asset, borrow_amt, collat_amt)
 
 
