@@ -95,7 +95,7 @@ class Agent:
         self.holdings[tkn] += amt
 
     def remove(self, tkn: str, amt: float) -> None:
-        if not self.enforce_holdings or self.validate_holdings(tkn, amt):
+        if self.validate_holdings(tkn, amt):
             if tkn not in self.holdings:
                 self.holdings[tkn] = 0
             self.holdings[tkn] -= amt
