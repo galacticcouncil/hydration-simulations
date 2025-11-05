@@ -2261,6 +2261,7 @@ def test_calculate_lrna_swaps(tkn_liquidity, tkn_lrna):
         },
         lrna_fee=0.0005,
         asset_fee=0.0025,
+        slip_factor=1
     )
     agent = Agent(enforce_holdings=False)
     for swap in [{"tkn_sell": "LRNA", "tkn_buy": "TKN"}, {"tkn_sell": "TKN", "tkn_buy": "LRNA"}]:
@@ -2525,7 +2526,8 @@ def test_lrna_swap_equivalency(lrna_burn_rate, min_fee_fraction):
         asset_fee=DynamicFee(
             current={'HDX': mpf(1) / 1000 * 7, 'USD': mpf(1) / 400}
         ),
-        lrna_fee_burn=mpf(1) / lrna_burn_rate / min_fee_fraction / 2000
+        lrna_fee_burn=mpf(1) / lrna_burn_rate / min_fee_fraction / 2000,
+        slip_factor=1.0
     )
 
     agent = Agent(holdings={'HDX': mpf(1000000), 'LRNA': mpf(0)})
