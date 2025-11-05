@@ -473,7 +473,7 @@ class OmnipoolState(Exchange):
             for name, oracle in self.oracles.items()
         ]) + f'\n)\n\nerror message: {self.fail or "None"}'
 
-    def calculate_sell_from_buy(self, tkn_buy: str, tkn_sell: str, buy_quantity: float):
+    def calculate_inputs_from_output(self, tkn_buy: str, tkn_sell: str, buy_quantity: float):
         if tkn_buy == "LRNA":
             D = buy_quantity
         else:
@@ -482,11 +482,11 @@ class OmnipoolState(Exchange):
             af = self.asset_fee(tkn_buy)
             b = buy_quantity / (1.0 - af)
             if b >= A:
-                return math.inf  # infeasible: not enough liquidity to buy this much
+                return math.inf, 0, 0  # infeasible: not enough liquidity to buy this much
             D = (b * Qb) / (A - b)
 
         if tkn_sell == "LRNA":
-            return D
+            return D, 0, 0
 
         L = self.liquidity[tkn_sell]
         last_block_h2o = self.current_block.lrna[tkn_sell]
@@ -495,7 +495,7 @@ class OmnipoolState(Exchange):
         s = (self.slip_factor or 0.0)
         C = current_h2o - last_block_h2o
 
-        if abs(D - C * k) < 1e-15:
+        if abs(D - C * k) < 1e-20:
             x = C
         else:
             p = (k - s) if (D < C * k) else (k + s)
@@ -504,21 +504,22 @@ class OmnipoolState(Exchange):
 
             disc = q * q - 4 * p * r
             if disc < 0:
-                return math.inf  # infeasible: no real solution
+                return math.inf, 0, 0  # infeasible: no real solution
             sd = disc ** 0.5
             u = (2 * r) / (-q - (sd if q >= 0 else -sd))
             x = C - u
 
         if not (0 < x < current_h2o):
-            return math.inf
+            return math.inf, 0, 0
         if (last_block_h2o + (C - x)) <= 0:
-            return math.inf
-        if tkn_sell != "LRNA":
-            # in case we would like to do something in particular with this fee
-            slip_fee = x * self.compute_slip_fee(tkn_sell, -x)
-
+            return math.inf, 0, 0
+        slip_fee = x * self.compute_slip_fee(tkn_sell, -x) if tkn_sell != "LRNA" else 0.0
+        lrna_fee = x * self.lrna_fee(tkn_sell) if tkn_sell != "LRNA" else 0.0
         sell_quantity = (L * x) / (current_h2o - x)
-        return sell_quantity
+        return sell_quantity, slip_fee, lrna_fee
+
+    def calculate_sell_from_buy(self, tkn_buy, tkn_sell, buy_quantity):
+        return self.calculate_inputs_from_output(tkn_buy, tkn_sell, buy_quantity)[0]
 
     def calculate_buy_from_sell(
             self,
@@ -746,14 +747,15 @@ class OmnipoolState(Exchange):
         # buying LRNA
         elif delta_qa > 0:
             # buying LRNA
-            lrna_fee_total = delta_qa / (1 - lrna_fee) - delta_qa
-            slip_fee_total = delta_qa * self.compute_slip_fee(tkn, -delta_qa)
+            delta_ra, slip_fee_total, lrna_fee_total = self.calculate_inputs_from_output(
+                tkn_buy='LRNA', tkn_sell=tkn, buy_quantity=delta_qa
+            )
+            delta_ra = -delta_ra
             delta_qi = -delta_qa - lrna_fee_total - slip_fee_total
             lrna_fee_burn = self.lrna_fee_burn * lrna_fee_total
             fee_deposit = lrna_fee_total - lrna_fee_burn
             if delta_qi + self.lrna[tkn] <= 0:
                 return self.fail_transaction('insufficient lrna in pool')
-            delta_ra = -self.liquidity[tkn] * -delta_qi / (delta_qi + self.lrna[tkn])
             if not agent.validate_holdings(tkn, -delta_ra):
                 return self.fail_transaction('Agent has insufficient assets')
             self.lrna[tkn] += delta_qi  # burn the LRNA fee
@@ -767,10 +769,10 @@ class OmnipoolState(Exchange):
                 return self.fail_transaction('agent has insufficient assets')
             delta_qi = self.lrna[tkn] * delta_ra / (self.liquidity[tkn] - delta_ra)
             lrna_fee_total = -delta_qi * lrna_fee
-            slip_fee_total = -delta_qi * self.compute_slip_fee(tkn, -delta_qi)
+            slip_fee_total = -delta_qi * self.compute_slip_fee(tkn, delta_qi)
             lrna_fee_burn = lrna_fee_total * self.lrna_fee_burn
             fee_deposit = lrna_fee_total - lrna_fee_burn
-            delta_qa = -delta_qi - lrna_fee_total
+            delta_qa = -delta_qi - lrna_fee_total - slip_fee_total
             self.lrna[tkn] += delta_qi
             self.liquidity[tkn] -= delta_ra
             if self.lrna_fee_destination:
@@ -779,12 +781,8 @@ class OmnipoolState(Exchange):
         else:
             return self.fail_transaction('All deltas are zero.')
 
-        if delta_qa > 0:
-            agent.add('LRNA', delta_qa)
-            agent.remove(tkn, -delta_ra)
-        else:
-            agent.remove('LRNA', -delta_qa)
-            agent.add(tkn, delta_ra)
+        agent.add('LRNA', delta_qa)
+        agent.add(tkn, delta_ra)
 
         return self
 
