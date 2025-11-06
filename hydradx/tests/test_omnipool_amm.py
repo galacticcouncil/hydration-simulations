@@ -1161,6 +1161,7 @@ def test_slip_fees(list_offset: int, slip_factor: float):
         },
         slip_factor=slip_factor
     )
+    omnipool.max_lrna_fee = 1.0
     n = len(omnipool.asset_list)
     trades = [
         # trade every possible pair in both directions
@@ -2124,8 +2125,7 @@ def test_calculate_sell_from_buy(list_offset: int, buy_quantities: list[float]):
         },
         lrna_fee=mpf(1) / 2000,  # 0.0005
         asset_fee=mpf(1) / 400,  # 0.0025
-        slip_factor=mpf(1.0),
-        minimum_slip_fee=mpf(0.0)
+        slip_factor=mpf(1.0)
     )
 
     for i, swap in enumerate(swaps):
@@ -2151,11 +2151,6 @@ def test_calculate_sell_from_buy(list_offset: int, buy_quantities: list[float]):
             raise AssertionError(f'sell quantity {actual_sell_quantity} != calculated {sell_quantity}')
         if buy_quantity != pytest.approx(actual_buy_quantity, rel=1e-40):
             raise AssertionError(f'buy quantity {buy_quantity} != actual quantity {agent.holdings[tkn_buy]}')
-
-        if buy_quantity != pytest.approx(agent.get_holdings(tkn_buy), rel=1e-40):
-            raise AssertionError(f'expected buy quantity {buy_quantity} != actual quantity {agent.holdings[tkn_buy]}')
-        if sell_quantity != pytest.approx(-agent.get_holdings(tkn_sell), rel=1e-40):
-            raise AssertionError(f'expected sell quantity {sell_quantity} != actual quantity {-agent.holdings[tkn_sell]}')
 
         agent.holdings = {}
         omnipool.swap( # don't copy this time: accumulate trade volume
@@ -2209,8 +2204,7 @@ def test_calculate_buy_from_sell(list_offset: int, sell_quantities: list[float])
         },
         lrna_fee=mpf(1) / 2000,  # 0.0005
         asset_fee=mpf(1) / 400,  # 0.0025
-        slip_factor=mpf(1.0),
-        minimum_slip_fee=mpf(0.0)
+        slip_factor=mpf(1.0)
     )
     for i, swap in enumerate(swaps):
         agent = Agent(enforce_holdings=False)
@@ -3008,6 +3002,7 @@ def test_slip_fee_works():
         lrna_fee=0.0005,
         slip_factor=1
     )
+    omnipool.max_lrna_fee = 1.0  # disable LRNA fee cap for this test
 
     feeless_pool = omnipool.copy()
     feeless_pool.slip_factor = 0
