@@ -45,10 +45,20 @@ def run_sim():
     initial_omnipool = OmnipoolState(
         tokens={
             "HDX": {"liquidity": 10000000, "LRNA": 5000},
-            "USD": {"liquidity": 500000, "LRNA": 25000},
+            "USD": {"liquidity": 200000, "LRNA": 10000},
         },
-        asset_fee=settings.omnipool_asset_fee,
-        lrna_fee=settings.omnipool_lrna_fee,
+        asset_fee=DynamicFee(
+            minimum=settings.omnipool_asset_fee_minimum,
+            maximum=settings.omnipool_asset_fee_maximum,
+            amplification=settings.omnipool_asset_fee.amplification,
+            decay=settings.omnipool_asset_fee_decay
+        ),
+        lrna_fee=DynamicFee(
+            minimum=settings.omnipool_lrna_fee_minimum,
+            maximum=settings.omnipool_asset_fee_maximum, # note: using asset fee maximum here
+            amplification=settings.omnipool_lrna_fee.amplification,
+            decay=settings.omnipool_lrna_fee_decay
+        ),
         withdrawal_fee=True,
         unique_id="omnipool",
         preferred_stablecoin="USD",
@@ -82,22 +92,11 @@ def run_sim():
             events = scenarios[i - 1]
             omnipool = initial_omnipool.copy()
             if i % 2 == 0:
-                omnipool.slip_factor = 1
-                omnipool.minimum_slip_fee = 0
-                omnipool.asset_fee = DynamicFee(
-                    minimum=settings.omnipool_asset_fee_minimum - 0.0005,
-                    maximum=settings.omnipool_asset_fee_maximum,
-                    amplification=settings.omnipool_asset_fee_amplification,
-                    decay=settings.omnipool_asset_fee_decay
-                )
-                omnipool.lrna_fee = DynamicFee(
-                    minimum=settings.omnipool_lrna_fee_minimum - 0.0005,
-                    maximum=settings.omnipool_lrna_fee_maximum,
-                    amplification=settings.omnipool_lrna_fee_amplification,
-                    decay=settings.omnipool_lrna_fee_decay
-                )
+                omnipool.slip_factor = 2
+                omnipool.min_lrna_fee = 0
             else:
-                pass
+                omnipool.slip_factor = 0
+                omnipool.min_lrna_fee = settings.omnipool_lrna_fee_minimum
 
             trade_agent = Agent(
                 enforce_holdings=False,
@@ -109,7 +108,7 @@ def run_sim():
                 feeless_pool.asset_fee = 0
                 feeless_pool.lrna_fee = 0
                 feeless_pool.slip_factor = None
-                agent_start_h2o = trade_agent.get_holdings("LRNA")
+                agent_start_usd = trade_agent.get_holdings("USD")
                 agent_start_hdx = trade_agent.get_holdings("HDX")
                 target_price = price_progression[block] if block < sim_length else price_progression[-1]
                 omnipool.trade_to_price(
@@ -117,29 +116,32 @@ def run_sim():
                     tkn="HDX",
                     target_price=target_price,
                 )
-                agent_end_h2o = trade_agent.get_holdings("LRNA")
+                if trade_agent.get_holdings("LRNA") < 0:
+                    omnipool.swap(trade_agent, tkn_buy="LRNA", tkn_sell="USD", buy_quantity=-trade_agent.holdings["LRNA"])
+                else:
+                    omnipool.swap(trade_agent, tkn_sell="LRNA", tkn_buy="USD", sell_quantity=trade_agent.get_holdings("LRNA"))
+                agent_end_usd = trade_agent.get_holdings("USD")
                 agent_end_hdx = trade_agent.get_holdings("HDX")
-                feeless_agent = trade_agent.copy()
-                feeless_start_h2o = feeless_agent.get_holdings("LRNA")
+                feeless_agent = Agent(enforce_holdings=False)
 
-                if agent_end_hdx - agent_start_hdx > 0:
+                if agent_end_hdx > agent_start_hdx:
                     feeless_pool.swap(
                         agent=feeless_agent,
-                        tkn_sell="LRNA",
+                        tkn_sell="USD",
                         tkn_buy="HDX",
                         buy_quantity=agent_end_hdx - agent_start_hdx,
                     )
-                    h2o_sold = feeless_start_h2o - feeless_agent.get_holdings("LRNA")
-                    fee = 1 - h2o_sold / (agent_start_h2o - agent_end_h2o)
-                elif agent_start_hdx - agent_end_hdx > 0:
+                    usd_sold = -feeless_agent.get_holdings("USD")
+                    fee = 1 - usd_sold / (agent_start_usd - agent_end_usd)
+                elif agent_start_hdx > agent_end_hdx:
                     feeless_pool.swap(
                         agent=feeless_agent,
                         tkn_sell="HDX",
-                        tkn_buy="LRNA",
+                        tkn_buy="USD",
                         sell_quantity=agent_start_hdx - agent_end_hdx,
                     )
-                    h2o_bought = feeless_agent.get_holdings("LRNA") - feeless_start_h2o
-                    fee = 1 - (agent_end_h2o - agent_start_h2o) / h2o_bought
+                    usd_bought = feeless_agent.get_holdings("USD")
+                    fee = 1 - (agent_end_usd - agent_start_usd) / usd_bought
                 else:
                     fee = 0.0
 
