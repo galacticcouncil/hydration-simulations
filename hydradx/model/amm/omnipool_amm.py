@@ -284,6 +284,30 @@ class OmnipoolState(Exchange):
     def max_lrna_fee(self, value: float):
         self._lrna_fee.maximum = value
 
+    @property
+    def max_asset_fee(self):
+        return self._asset_fee.maximum
+
+    @max_asset_fee.setter
+    def max_asset_fee(self, value: float):
+        self._asset_fee.maximum = value
+
+    @property
+    def min_lrna_fee(self):
+        return self._lrna_fee.minimum
+
+    @min_lrna_fee.setter
+    def min_lrna_fee(self, value: float):
+        self._lrna_fee.minimum = value
+
+    @property
+    def min_asset_fee(self):
+        return self._asset_fee.minimum
+
+    @min_asset_fee.setter
+    def min_asset_fee(self, value: float):
+        self._asset_fee.minimum = value
+
     def compute_dynamic_fee(self, fee: DynamicFee, tkn: str) -> float:
         if fee.amplification == 0:
             fee.last_updated[tkn] = self.time_step
@@ -322,13 +346,6 @@ class OmnipoolState(Exchange):
         else:
             delta_q += self.lrna[tkn] - self.current_block.lrna[tkn]
             return self.slip_factor * abs(delta_q) / (self.current_block.lrna[tkn] + delta_q)
-        # calc for selling:
-        # qi = -li * ri / (li + ri)
-        # f = s * -qi / (ln - qi)
-        # qj = qi * (1 - f)
-        # rj = - lj * qj / (lj + qj)
-        # f = s * q / (ln + q)
-        # dr = ln * -r / (li + r)
 
     def add_token(
             self,
