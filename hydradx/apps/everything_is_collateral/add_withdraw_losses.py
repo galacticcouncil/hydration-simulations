@@ -143,7 +143,7 @@ def run_sim():
     )
 
     fails = []
-    print(f"{initial_omnipool.asset_fee("HDX")}), {initial_omnipool.lrna_fee("HDX")}")
+    print(f"{initial_omnipool.asset_fee('HDX')}), {initial_omnipool.lrna_fee('HDX')}")
 
     scenarios = [[] for _ in [1, 2, 3, 4]]
     with st.spinner("Running simulation..."):

@@ -403,7 +403,7 @@ with st.sidebar:
                         st.markdown(f":red[{asset}]")
                     with amt_col:
                         if number_format == "%":
-                            st.markdown(f":red[{"+" if val > 0 else ""}{val:,.0f}%]")
+                            st.markdown(f":red[{'+' if val > 0 else ''}{val:,.0f}%]")
                         elif number_format == "$":
                             st.markdown(f":red[${val:,.0f}]")
                         else:
@@ -1046,7 +1046,7 @@ def run_app():
                 ]
             fig, ax = plt.subplots(figsize=(16, 6))
             ax.set_xlabel("Time Steps")
-            ax.set_ylabel(f"{asset_name if liquidity_or_lrna == "liquidity" else f'{asset_name} H2O'} balance")
+            ax.set_ylabel(f"{asset_name if liquidity_or_lrna == 'liquidity' else f'{asset_name} H2O'} balance")
 
             ax.plot(balances, label=f"{asset_name} balance")
             st.pyplot(fig)
