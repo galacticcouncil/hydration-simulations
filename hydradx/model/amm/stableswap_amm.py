@@ -51,7 +51,6 @@ class StableSwapPoolState(Exchange):
             self.liquidity[token] = quantity
 
         self.n_coins = len(self.asset_list)
-        self.ann = self.amplification * self.n_coins
 
         self.set_peg(peg)
         self.set_peg_target(peg_target)
@@ -63,6 +62,10 @@ class StableSwapPoolState(Exchange):
     @property
     def d(self) -> float:
         return self.calculate_d()
+
+    @property
+    def ann(self) -> float:
+        return self.amplification * self.n_coins
 
     def fail_transaction(self, error: str, **kwargs):
         self.fail = error
@@ -806,6 +809,7 @@ def balance_ratio_at_price(
 ):
     init_quantity = 1_000_000
     # find quantity that is too high
+    spot = 0
     for i in range(100):
         tokens = {"A": init_quantity, "B": tkn_quantity}
         pool = StableSwapPoolState(tokens, amplification)
@@ -820,6 +824,7 @@ def balance_ratio_at_price(
     # do binary search to identify quantity of asset 0.
     max_quantity = init_quantity
     min_quantity = 0
+    mid_quantity = 0
     for i in range(100):
         mid_quantity = (max_quantity + min_quantity) / 2
         tokens = {"A": mid_quantity, "B": tkn_quantity}
