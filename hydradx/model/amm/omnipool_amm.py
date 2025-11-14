@@ -6,6 +6,7 @@ from .agents import Agent
 from .exchange import Exchange
 from .oracle import Oracle, Block, OracleArchiveState
 
+
 class AssetFeeCallable(Protocol):
     def __call__(self, tkn: str, delta_tkn: float = 0) -> float: ...
 
@@ -308,6 +309,22 @@ class OmnipoolState(Exchange):
     def min_asset_fee(self, value: float):
         self._asset_fee.minimum = value
 
+    @property
+    def current_asset_fee(self):
+        return self._asset_fee.current
+
+    @current_asset_fee.setter
+    def current_asset_fee(self, value: dict[str, float]):
+        self._asset_fee.current = value
+
+    @property
+    def current_lrna_fee(self):
+        return self._lrna_fee.current
+
+    @current_lrna_fee.setter
+    def current_lrna_fee(self, value: dict[str, float]):
+        self._lrna_fee.current = value
+
     def compute_dynamic_fee(self, fee: DynamicFee, tkn: str) -> float:
         if fee.amplification == 0:
             fee.last_updated[tkn] = self.time_step
@@ -321,6 +338,8 @@ class OmnipoolState(Exchange):
         # use this approximation to catch up to where we think the fee should be,
         # knowing there have been no trades until now
         num_blocks = int(self.time_step - fee.last_updated[tkn])
+        if num_blocks < 0:
+            pass
         m = min(self.dynamic_fee_precision, num_blocks)
         prev_volume = fee.volume_at_last_update[tkn] if tkn in fee.volume_at_last_update else 0
         prev_liquidity = fee.liquidity_at_last_update[tkn] if tkn in fee.liquidity_at_last_update else self.liquidity[tkn]
@@ -573,12 +592,15 @@ class OmnipoolState(Exchange):
     ) -> tuple[float, float, float, float]:
         """
         Given a sell quantity, calculate the effective price, so we can execute it as a buy
+        Returns: (buy_quantity, asset_fee_total, lrna_fee_total, slip_fee_total)
         """
         asset_fee_total, lrna_fee_total, slip_fee_total = 0, 0, 0
         if tkn_sell != "LRNA":
             delta_qi = self.lrna[tkn_sell] * sell_quantity / (self.liquidity[tkn_sell] + sell_quantity)
             lrna_fee = self.lrna_fee(tkn_sell, delta_qi)  # returns dynamic + slip fee, capped at self.max_lrna_fee
             lrna_fee_total = delta_qi * lrna_fee
+            slip_fee = self.compute_slip_fee(tkn_sell, sell_quantity)
+            slip_fee_total = delta_qi * min(slip_fee, self.max_lrna_fee - lrna_fee + slip_fee)
             delta_q = delta_qi - lrna_fee_total
         else:
             delta_q = sell_quantity
@@ -707,9 +729,9 @@ class OmnipoolState(Exchange):
 
             lrna_fee_total = -delta_qi * lrna_fee
             lrna_fee_burn = self.lrna_fee_burn * lrna_fee_total
-            fee_deposit = lrna_fee_total - lrna_fee_burn
             slip_fee = min(self.compute_slip_fee(tkn_sell, delta_qi), self.max_lrna_fee - lrna_fee)
             slip_fee_total = -delta_qi * slip_fee
+            fee_deposit = lrna_fee_total - lrna_fee_burn + slip_fee_total
 
             # slip_fee_total = -delta_qi * self.compute_slip_fee(tkn_sell, delta_qi)
             # we could do something different with this fee, but for now it just stays in the pool
@@ -805,7 +827,7 @@ class OmnipoolState(Exchange):
             delta_ra = -delta_ra
             delta_qi = -delta_qa - lrna_fee_total - slip_fee_total
             lrna_fee_burn = self.lrna_fee_burn * lrna_fee_total
-            fee_deposit = lrna_fee_total - lrna_fee_burn
+            fee_deposit = lrna_fee_total - lrna_fee_burn + slip_fee_total
             if delta_qi + self.lrna[tkn] <= 0:
                 return self.fail_transaction('insufficient lrna in pool')
             if not agent.validate_holdings(tkn, -delta_ra):
@@ -825,7 +847,7 @@ class OmnipoolState(Exchange):
             slip_fee = min(self.compute_slip_fee(tkn, delta_qi), self.max_lrna_fee - lrna_fee)
             slip_fee_total = -delta_qi * slip_fee
             lrna_fee_burn = lrna_fee_total * self.lrna_fee_burn
-            fee_deposit = lrna_fee_total - lrna_fee_burn
+            fee_deposit = lrna_fee_total - lrna_fee_burn + slip_fee_total
             delta_qa = -delta_qi - lrna_fee_total - slip_fee_total
             self.lrna[tkn] += delta_qi
             self.liquidity[tkn] -= delta_ra
