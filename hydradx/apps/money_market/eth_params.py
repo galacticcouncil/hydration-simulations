@@ -73,7 +73,7 @@ def load_omnipool_router() -> tuple[OmnipoolRouter, str]:
     return OmnipoolRouter(exchanges=[load_omnipool, *stableswap_pools], unique_id='router'), cache_time
 
 
-def load_money_market(block_number: int) -> MoneyMarket | None:
+def load_money_market(block_number: int) -> MoneyMarket:
     print("Loading money market data...")
     try:
         # if '/' in __file__:
