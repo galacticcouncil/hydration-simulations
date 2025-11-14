@@ -339,7 +339,7 @@ class OmnipoolState(Exchange):
         # knowing there have been no trades until now
         num_blocks = int(self.time_step - fee.last_updated[tkn])
         if num_blocks < 0:
-            pass
+            print('warning: negative num_blocks in compute_dynamic_fee')
         m = min(self.dynamic_fee_precision, num_blocks)
         prev_volume = fee.volume_at_last_update[tkn] if tkn in fee.volume_at_last_update else 0
         prev_liquidity = fee.liquidity_at_last_update[tkn] if tkn in fee.liquidity_at_last_update else self.liquidity[tkn]
@@ -527,8 +527,8 @@ class OmnipoolState(Exchange):
             A = self.liquidity[tkn_buy]
             Qb = self.lrna[tkn_buy]
             asset_fee = self.asset_fee(tkn_buy)
-            asset_fee_total = buy_quantity * asset_fee
             b = buy_quantity / (1 - asset_fee)
+            asset_fee_total = b - buy_quantity
             if b >= A:
                 return math.inf, 0, 0, 0  # infeasible: not enough liquidity to buy this much
             D = (b * Qb) / (A - b)
@@ -597,11 +597,11 @@ class OmnipoolState(Exchange):
         asset_fee_total, lrna_fee_total, slip_fee_total = 0, 0, 0
         if tkn_sell != "LRNA":
             delta_qi = self.lrna[tkn_sell] * sell_quantity / (self.liquidity[tkn_sell] + sell_quantity)
-            lrna_fee = self.lrna_fee(tkn_sell, delta_qi)  # returns dynamic + slip fee, capped at self.max_lrna_fee
+            lrna_fee = self.compute_dynamic_fee(self._lrna_fee, tkn_sell)  # returns dynamic + slip fee, capped at self.max_lrna_fee
             lrna_fee_total = delta_qi * lrna_fee
-            slip_fee = self.compute_slip_fee(tkn_sell, sell_quantity)
-            slip_fee_total = delta_qi * min(slip_fee, self.max_lrna_fee - lrna_fee + slip_fee)
-            delta_q = delta_qi - lrna_fee_total
+            slip_fee = self.compute_slip_fee(tkn_sell, -delta_qi)
+            slip_fee_total = delta_qi * min(slip_fee, self.max_lrna_fee - lrna_fee)
+            delta_q = delta_qi - lrna_fee_total - slip_fee_total
         else:
             delta_q = sell_quantity
 
@@ -724,7 +724,7 @@ class OmnipoolState(Exchange):
             asset_fee = self.compute_dynamic_fee(self._asset_fee, tkn_buy)
             lrna_fee = self.compute_dynamic_fee(self._lrna_fee, tkn_sell)
             # also update both fees for each asset, because that's what they do in production
-            self.asset_fee(tkn_sell)
+            self.compute_dynamic_fee(self._asset_fee, tkn_sell)
             self.compute_dynamic_fee(self._lrna_fee, tkn_buy)
 
             lrna_fee_total = -delta_qi * lrna_fee
