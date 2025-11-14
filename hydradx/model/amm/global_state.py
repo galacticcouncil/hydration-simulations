@@ -67,7 +67,7 @@ class GlobalState:
             for agent in self.agents.values()
         ]) + sum([
             sum([
-                pool.liquidity[tkn] * self.price(tkn) for tkn in pool.asset_list
+                pool.liquidity[tkn] * self.price(tkn) for tkn in pool.liquidity
             ])
             for pool in self.pools.values()
         ])
@@ -145,7 +145,7 @@ class GlobalState:
         """
         return the market price of each asset in state.asset_list, as well as the price of each asset in shares
         """
-        prices = {tkn: self.price(tkn) for tkn in self.asset_list}
+        prices: dict = {tkn: self.price(tkn) for tkn in self.asset_list}
         for share_id in shares:
             # if shares are for a specific asset in a specific pool, get prices according to that pool
             if isinstance(share_id, tuple):
@@ -364,7 +364,7 @@ def oscillate_prices(volatility: dict[str: float], trend: dict[str: float] = Non
     return transform
 
 
-def historical_prices(price_list: list[dict[str: float]]) -> Callable:
+def historical_prices(price_list: list[dict[str, float]]) -> Callable:
     def transform(state: GlobalState) -> GlobalState:
         for tkn in price_list[state.time_step]:
             state.external_market[tkn] = price_list[state.time_step][tkn]

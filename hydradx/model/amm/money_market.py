@@ -30,6 +30,8 @@ class CDP:
             f"{newline.join([f'        {tkn}: {self.debt[tkn]}' for tkn in self.debt.keys()])}\n"
             f"    collateral:\n"
             f"{newline.join([f'        {tkn}: {self.collateral[tkn]}' for tkn in self.collateral.keys()])}\n"
+            f"    liquidation_threshold: {self.liquidation_threshold}\n"
+            f"    health_factor: {self.health_factor}\n"
         )
 
     def copy(self):
@@ -59,7 +61,7 @@ class MoneyMarketAsset:
             emode_liquidation_bonus: float = None,
             emode_liquidation_threshold: float = None,
             emode_ltv: float = None,
-            emode_label: str = '',
+            emode_label: str = 'None',
             liquidity: float = float('inf'),
             supply_cap: float = float('inf')
     ):
@@ -74,6 +76,21 @@ class MoneyMarketAsset:
         self.emode_ltv = emode_ltv or ltv
         self.emode_label = emode_label
         self.supply_cap = supply_cap
+
+    def copy(self):
+        return MoneyMarketAsset(
+            name=self.name,
+            price=self.price,
+            liquidity=self.liquidity,
+            liquidation_bonus=self.liquidation_bonus,
+            liquidation_threshold=self.liquidation_threshold,
+            ltv=self.ltv,
+            emode_liquidation_bonus=self.emode_liquidation_bonus,
+            emode_liquidation_threshold=self.emode_liquidation_threshold,
+            emode_ltv=self.emode_ltv,
+            emode_label=self.emode_label,
+            supply_cap=self.supply_cap
+        )
 
 
 class MoneyMarket(Exchange):
@@ -151,6 +168,25 @@ class MoneyMarket(Exchange):
         self.asset_list.append(new_asset.name)
         self.assets[new_asset.name] = new_asset
 
+    def add_cdp(self, cdp: CDP):
+        if not cdp.liquidation_threshold:
+            cdp.liquidation_threshold = self.cdp_liquidation_threshold(cdp)
+        if cdp.health_factor is None:
+            cdp.health_factor = self.get_health_factor(cdp)
+        self.cdps.append(cdp)
+        for tkn in cdp.debt:
+            if tkn not in self.borrowed:
+                self.borrowed[tkn] = 0
+            self.borrowed[tkn] += cdp.debt[tkn]
+        for tkn in cdp.collateral:
+            self.liquidity[tkn] += cdp.collateral[tkn]
+        return self
+
+    def add_cdps(self, cdps: list[CDP]):
+        for cdp in cdps:
+            self.add_cdp(cdp)
+        return self
+
     def fail_transaction(self, fail: str):
         self.fail = fail
         return self
@@ -179,7 +215,7 @@ class MoneyMarket(Exchange):
                 for d_tkn in cdp.debt
         ])
         if debt_total == 0:
-            return 0
+            return float('inf')
         health_factor = (
             sum([
                 cdp.collateral[c_tkn] * prices[c_tkn]
@@ -190,20 +226,20 @@ class MoneyMarket(Exchange):
         return health_factor
 
     def get_ltv(self, collateral_tkn: str, debt_tkn: str, e_mode: str = 'None') -> float:
-        if self.assets[collateral_tkn].emode_label == self.assets[debt_tkn].emode_label == e_mode:
+        if self.assets[collateral_tkn].emode_label == self.assets[debt_tkn].emode_label == e_mode and '' != e_mode != 'None':
             return self.assets[collateral_tkn].emode_ltv
         else:
             return self.assets[collateral_tkn].ltv
 
     def get_liquidation_bonus(self, collateral_tkn: str, debt_tkn: str, e_mode: str = 'None') -> float:
-        if self.assets[collateral_tkn].emode_label == self.assets[debt_tkn].emode_label == e_mode:
+        if self.assets[collateral_tkn].emode_label == self.assets[debt_tkn].emode_label == e_mode and '' != e_mode != 'None':
             return self.assets[collateral_tkn].emode_liquidation_bonus
         else:
             return self.assets[collateral_tkn].liquidation_bonus
 
     def get_liquidation_threshold(self, collateral_tkn, debt_tkn, e_mode: str = 'None') -> float:
         """Get the liquidation threshold for a collateral-debt asset pair."""
-        if self.assets[collateral_tkn].emode_label == self.assets[debt_tkn].emode_label == e_mode:
+        if self.assets[collateral_tkn].emode_label == self.assets[debt_tkn].emode_label == e_mode and '' != e_mode != 'None':
             return self.assets[collateral_tkn].emode_liquidation_threshold
         else:
             return self.assets[collateral_tkn].liquidation_threshold
@@ -253,7 +289,8 @@ class MoneyMarket(Exchange):
                collateral_amt: float) -> CDP or None:
         assert borrow_asset != collateral_asset
         assert borrow_asset in self.liquidity
-        assert borrow_amt <= self.liquidity[borrow_asset] - self.borrowed[borrow_asset]
+        if not borrow_amt <= self.liquidity[borrow_asset] - self.borrowed[borrow_asset]:
+            return self.fail_transaction(f"Not enough liquidity to borrow {borrow_asset}")
         assert agent.validate_holdings(collateral_asset, collateral_amt)
         price = self.price(collateral_asset) / self.price(borrow_asset)
         if price * collateral_amt * self.get_ltv(collateral_asset, borrow_asset, self.assets[collateral_asset].emode_label) < borrow_amt:
@@ -392,7 +429,12 @@ class MoneyMarket(Exchange):
         """
         assert tkn_sell in self.liquidity
         assert tkn_buy in self.liquidity
-        return sell_quantity * self.sell_spot(tkn_sell, tkn_buy)
+        if sell_quantity + self.liquidity[tkn_sell] > self.assets[tkn_sell].supply_cap:
+            return 0
+        buy_quantity = sell_quantity * self.sell_spot(tkn_sell, tkn_buy)
+        if buy_quantity > self.liquidity[tkn_buy] - self.borrowed[tkn_buy]:
+            return 0
+        return buy_quantity
 
 
     def calculate_sell_from_buy(self, tkn_buy: str, tkn_sell: str, buy_quantity: float) -> float:
@@ -401,7 +443,12 @@ class MoneyMarket(Exchange):
         """
         assert tkn_buy in self.liquidity
         assert tkn_sell in self.liquidity
-        return buy_quantity * self.buy_spot(tkn_buy, tkn_sell)
+        if buy_quantity > self.liquidity[tkn_buy] - self.borrowed[tkn_buy]:
+            return float('inf')
+        sell_quantity = buy_quantity * self.buy_spot(tkn_buy, tkn_sell)
+        if sell_quantity + self.liquidity[tkn_sell] > self.assets[tkn_sell].supply_cap:
+            return float('inf')
+        return sell_quantity
 
 
     def swap(self, agent: Agent, tkn_sell: str, tkn_buy: str, buy_quantity: float = None,
@@ -422,6 +469,9 @@ class MoneyMarket(Exchange):
 
         if buy_quantity > self.liquidity[tkn_buy] - self.borrowed[tkn_buy]:
             return self.fail_transaction('Not enough liquidity')
+
+        if sell_quantity + self.liquidity[tkn_sell] > self.assets[tkn_sell].supply_cap:
+            return self.fail_transaction('Supply cap exceeded')
 
         if not agent.validate_holdings(tkn_sell, sell_quantity):
             return self.fail_transaction('Not enough holdings')

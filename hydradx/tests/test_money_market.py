@@ -267,8 +267,12 @@ def test_borrow():
     agent = Agent(holdings={collateral_asset: collat_amt})
     mm = MoneyMarket(
         assets=[
-            MoneyMarketAsset(borrow_asset, 1, 1000000, 0.01, 0.7, 0.7),
-            MoneyMarketAsset(collateral_asset, 11, 1000000, 0.01, 0.7, 0.7)
+            MoneyMarketAsset(
+                borrow_asset, price=1, liquidity=1000000, liquidation_bonus=0.01, liquidation_threshold=0.7
+            ),
+            MoneyMarketAsset(
+                collateral_asset, price=11, liquidity=1000000, liquidation_bonus=0.01, liquidation_threshold=0.7
+            )
         ]
     )
     cdp = mm.borrow(agent, borrow_asset, collateral_asset, borrow_amt, collat_amt)
@@ -300,12 +304,12 @@ def test_borrow_fails():
     agent = Agent(holdings={collateral_asset: collat_amt})
     mm = MoneyMarket(
         assets=[
-            MoneyMarketAsset(borrow_asset, 1, liquidation_bonus=0.01, liquidation_threshold=0.7),
-            MoneyMarketAsset(collateral_asset, 10, liquidation_bonus=0.01, liquidation_threshold=0.7),
-            MoneyMarketAsset("BTC", 0, liquidation_bonus=0.01, liquidation_threshold=0.7),
+            MoneyMarketAsset(borrow_asset, price=1, liquidation_bonus=0.01, liquidation_threshold=0.7),
+            MoneyMarketAsset(collateral_asset, price=10, liquidation_bonus=0.01, liquidation_threshold=0.7),
+            MoneyMarketAsset("BTC", price=0, liquidation_bonus=0.01, liquidation_threshold=0.7),
         ]
     )
-    borrow_amt = collat_amt * 10 * 0.65
+    borrow_amt = collat_amt * 10 * 0.75
     mm.borrow(agent, borrow_asset, collateral_asset, borrow_amt, collat_amt)
     if not mm.fail:
         raise AssertionError('Borrowing more than LTV limit should fail.')
@@ -316,7 +320,7 @@ def test_borrow_fails():
         mm.borrow(agent, borrow_asset, "ETH", borrow_amt, collat_amt)
     with pytest.raises(Exception):  # should fail because borrow asset is not in liquidity
         mm.borrow(agent, "ETH", collateral_asset, borrow_amt, collat_amt)
-    with pytest.raises(Exception):  # should fail because of missing oracle
+    with pytest.raises(Exception):  # should fail because of missing price
         mm.borrow(agent, "BTC", collateral_asset, borrow_amt, collat_amt)
 
 
@@ -431,10 +435,10 @@ def test_omnipool_liquidate_cdp_oracle_equals_spot_small_cdp(collateral_amt: flo
         raise ValueError('Money market is not valid after liquidation')
 
     if treasury_agent.holdings['DOT'] > penalty * (init_cdp.collateral['DOT'] - cdp.collateral['DOT']):
-        raise  # treasury should collect at most penalty
+        raise ValueError("Treasury should collect at most penalty")
     for tkn in treasury_agent.holdings:
         if tkn not in cdp.collateral and treasury_agent.get_holdings(tkn) != 0:
-            raise  # treasury_agent should accrue no other token
+            raise ValueError("Treasury should not have any holdings of other tokens")
 
 
 def test_omnipool_liquidate_cdp_delta_debt_too_large():
@@ -463,9 +467,8 @@ def test_omnipool_liquidate_cdp_not_profitable():
     collat_ratio = 5.0
     collateral_amt = 2000
     omnipool = omnipool_setup_for_liquidation_testing()
-    for tkn in omnipool.asset_list:  # reduce TVL to increase slippage for the test
-        omnipool.liquidity[tkn] /= 2000
     dot_price = omnipool.price("DOT", "USDT")
+    omnipool.lrna['DOT'] /= 2  # manipulate omnipool so that liquidation is not profitable
 
     debt_amt = collat_ratio * collateral_amt
     init_cdp = CDP(debt={'USDT': mpf(debt_amt)}, collateral={'DOT': mpf(collateral_amt)})
@@ -730,7 +733,7 @@ def test_liquidate_against_omnipool_fuzz(collateral_amt1: float, ratio1: float, 
     elif cdp1.collateral['DOT'] == 0:  # fully liquidated, bad debt remaining
         assert ratio1 > 1/(1 + mm.get_liquidation_bonus('DOT', 'USDT'))
     elif cdp1.debt['USDT'] == debt_amt1:  # not liquidated
-        if ratio1 < liq_threshold:  # 1. overcollateralized
+        if ratio1 <= liq_threshold:  # 1. overcollateralized
             pass
         elif price_mult >= 1:  # 3. not profitable to liquidate
             pass
@@ -765,10 +768,10 @@ def test_set_mm_oracles_to_external_market():
                 liquidation_threshold=0.7,
                 ltv=0.6
             )
-            for tkn in omnipool.asset_list
+            for tkn in omnipool.liquidity
         ], oracle_source=omnipool.usd_price
     )
-    prices = {tkn: omnipool.price(tkn, "USDT") for tkn in omnipool.asset_list}
+    prices = {tkn: omnipool.price(tkn, "USDT") for tkn in omnipool.liquidity}
     mm.update()
     for tkn in mm.liquidity:
         if mm.price(tkn) != pytest.approx(prices[tkn], rel=1e-40):

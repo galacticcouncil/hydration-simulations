@@ -14,3 +14,5 @@
 /hydradx/model/data/
 /.hypothesis/
 *.env
+/hydradx/apps/fees/data
+/hydradx/apps/money_market/archive

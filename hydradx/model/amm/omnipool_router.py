@@ -7,10 +7,19 @@ from typing import Literal
 
 
 class Trade:
-    def __init__(self, exchange: str, tkn_sell: str, tkn_buy: str):
+    def __init__(
+            self,
+            exchange: str,
+            tkn_sell: str,
+            tkn_buy: str,
+            buy_quantity: float = None,
+            sell_quantity: float = None
+    ):
         self.exchange = exchange
         self.tkn_sell = tkn_sell
         self.tkn_buy = tkn_buy
+        self.buy_quantity = buy_quantity
+        self.sell_quantity = sell_quantity
 
 
 class OmnipoolRouter(Exchange):
@@ -43,14 +52,33 @@ class OmnipoolRouter(Exchange):
         }
 
     def buy_spot(self, tkn_buy: str, tkn_sell: str, fee: float = None):
-        return self.price_route(self.find_best_route(tkn_buy, tkn_sell, direction='buy'), direction='buy', fee=fee)
+        return self.price_route(self.find_best_route(tkn_buy, tkn_sell, buy_quantity=1), direction='buy', fee=fee)
 
     def sell_spot(self, tkn_sell: str, tkn_buy: str, fee: float = None):
-        return self.price_route(self.find_best_route(tkn_buy, tkn_sell, direction='sell'), direction='sell', fee=fee)
+        return self.price_route(self.find_best_route(tkn_buy, tkn_sell, sell_quantity=1), direction='sell', fee=fee)
+
+    def price(self, tkn: str, numeraire: str = ''):
+        """
+        Price of tkn in terms of numéraire (feeless)
+        """
+        if numeraire and numeraire not in self.asset_list:
+            raise ValueError(f'Denomination {numeraire} not in exchange')
+        if tkn == numeraire:
+            return 1.0
+        if not numeraire:
+            # default to price in USD
+            numeraire = sorted([t for t in self.asset_list if t.startswith('USD')])[0]
+
+        return self.sell_spot(tkn_buy=numeraire, tkn_sell=tkn, fee=0)
 
     def calculate_buy_from_sell(self, tkn_sell: str, tkn_buy: str, sell_quantity: float, route: list[Trade] = None):
+        """
+        Calculates how much tkn_buy you would get for selling sell_quantity of tkn_sell
+        If route is None, all routes are calculated and the best one is returned
+        Returns quantity of tkn_buy
+        """
         if route is None:
-            route = self.find_best_route(tkn_buy, tkn_sell, direction='sell')
+            route = self.find_best_route(tkn_buy=tkn_buy, tkn_sell=tkn_sell, sell_quantity=sell_quantity)
         quantity = sell_quantity
         for trade in route:
             quantity = self.calculate_trade(trade, sell_quantity=quantity)
@@ -58,7 +86,7 @@ class OmnipoolRouter(Exchange):
 
     def calculate_sell_from_buy(self, tkn_buy: str, tkn_sell: str, buy_quantity: float, route: list[Trade] = None):
         if route is None:
-            route = self.find_best_route(tkn_buy, tkn_sell, direction='buy')
+            route = self.find_best_route(tkn_buy=tkn_buy, tkn_sell=tkn_sell, buy_quantity=buy_quantity)
         quantity = buy_quantity
         for trade in route:
             quantity = self.calculate_trade(trade, buy_quantity=quantity)
@@ -91,6 +119,8 @@ class OmnipoolRouter(Exchange):
             direction: Literal['buy', 'sell'],
             fee: float = None
     ) -> float:
+        if len(route) == 0:
+            return 0.0
         price = 1.0
         for trade in route:
             price *= self.price_trade(trade, direction, fee=fee)
@@ -122,13 +152,17 @@ class OmnipoolRouter(Exchange):
                 return self.fail_transaction(exchange.fail)
         return self
 
+    def get_exchanges(self, tkn) -> list[Exchange]:
+        """Returns list of exchanges that have tkn in their asset list"""
+        return [exchange for exchange in self.exchanges.values() if tkn in exchange.asset_list or exchange.unique_id == tkn]
+
     def find_routes(self, tkn_buy: str, tkn_sell: str, direction: Literal['buy', 'sell']) -> list[list[Trade]]:
         """
         Finds all possible routes to swap between tkn_buy and tkn_sell
         """
         routes: list[list[Trade]] = []
-        tkn_buy_pools: list[Exchange] = [pool for pool in self.exchanges.values() if tkn_buy in pool.asset_list or pool.unique_id == tkn_buy]
-        tkn_sell_pools: list[Exchange] = [pool for pool in self.exchanges.values() if tkn_sell in pool.asset_list or pool.unique_id == tkn_sell]
+        tkn_buy_pools = self.get_exchanges(tkn_buy)
+        tkn_sell_pools = self.get_exchanges(tkn_sell)
 
         if len(tkn_buy_pools) == 0:
             raise ValueError(f'No pool with {tkn_buy} in asset list')
@@ -198,30 +232,31 @@ class OmnipoolRouter(Exchange):
                         set(sell_pool.asset_list + [sell_pool.unique_id]) & set(intermediate_pool.asset_list)
                         - {tkn_buy, tkn_sell}
                     )
+                    if len(intermediate_sell_tkns) == 0:
+                        continue
                     intermediate_buy_tkns = (
                         set(buy_pool.asset_list + [buy_pool.unique_id]) & set(intermediate_pool.asset_list)
                         - {tkn_buy, tkn_sell} - intermediate_sell_tkns
                     )
-                    if len(intermediate_sell_tkns) == 0 or len(intermediate_buy_tkns) == 0:
+                    if len(intermediate_buy_tkns) == 0:
                         continue
                     for intermediate_sell_tkn in intermediate_sell_tkns:
                         for intermediate_buy_tkn in intermediate_buy_tkns:
-                            if sell_pool.unique_id in intermediate_pool.asset_list and buy_pool.unique_id in intermediate_pool.asset_list:
-                                routes.append([
-                                    Trade(
-                                        exchange=sell_pool.unique_id,
-                                        tkn_sell=tkn_sell,
-                                        tkn_buy=intermediate_sell_tkn
-                                    ), Trade(
-                                        exchange=intermediate_pool.unique_id,
-                                        tkn_sell=intermediate_sell_tkn,
-                                        tkn_buy=intermediate_buy_tkn
-                                    ), Trade(
-                                        exchange=buy_pool.unique_id,
-                                        tkn_sell=intermediate_buy_tkn,
-                                        tkn_buy=tkn_buy
-                                    )
-                                ])
+                            routes.append([
+                                Trade(
+                                    exchange=sell_pool.unique_id,
+                                    tkn_sell=tkn_sell,
+                                    tkn_buy=intermediate_sell_tkn
+                                ), Trade(
+                                    exchange=intermediate_pool.unique_id,
+                                    tkn_sell=intermediate_sell_tkn,
+                                    tkn_buy=intermediate_buy_tkn
+                                ), Trade(
+                                    exchange=buy_pool.unique_id,
+                                    tkn_sell=intermediate_buy_tkn,
+                                    tkn_buy=tkn_buy
+                                )
+                            ])
 
         if direction == 'buy':
             for route in routes:
@@ -229,24 +264,35 @@ class OmnipoolRouter(Exchange):
 
         return routes
 
-    def find_best_route(self, tkn_buy, tkn_sell, direction: Literal['buy', 'sell']= 'sell') -> list[Trade]:
+    def find_best_route(self, tkn_buy, tkn_sell, buy_quantity: float = 0, sell_quantity: float = 0) -> list[Trade]:
         """
         Finds route to swap between tkn_buy and tkn_sell with the lowest spot price
         Returns tuple in the order of (sell_pool_id, buy_pool_id)
         """
-        routes = self.find_routes(tkn_buy, tkn_sell, direction)
+        routes = self.find_routes(tkn_buy, tkn_sell, direction = 'buy' if buy_quantity else 'sell')
         if len(routes) == 0:
-            raise ValueError(f'No route found for {tkn_buy} to {tkn_sell}')
-        if direction == 'buy':
+            # raise ValueError(f'No route found for {tkn_buy} to {tkn_sell}')
+            return []
+        if buy_quantity:
             # pay the least
-            return min(routes, key=lambda x: self.price_route(x, direction))
+            return min(
+                routes, key=lambda x: self.calculate_sell_from_buy(
+                    tkn_buy=tkn_buy, tkn_sell=tkn_sell, buy_quantity=buy_quantity, route=x
+                )
+            )
         else:
             # receive the most
-            return max(routes, key=lambda x: self.price_route(x, direction))
+            return max(
+                routes, key=lambda x: self.calculate_buy_from_sell(
+                    tkn_buy=tkn_buy, tkn_sell=tkn_sell, sell_quantity=sell_quantity, route=x
+                )
+            )
 
     def swap(self, agent, tkn_buy, tkn_sell, buy_quantity: float = None, sell_quantity: float = None):
         """Does swap along whatever route has best spot price"""
-        route = self.find_best_route(tkn_buy, tkn_sell, direction='buy' if buy_quantity else 'sell')
+        route = self.find_best_route(tkn_buy, tkn_sell, sell_quantity=sell_quantity, buy_quantity=buy_quantity)
+        if len(route) == 0:
+            return self.fail_transaction(f'No route found for {tkn_buy} to {tkn_sell}')
         return self.swap_route(
             agent=agent,
             route=route,

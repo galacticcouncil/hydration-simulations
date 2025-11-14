@@ -4,10 +4,11 @@ from .global_state import GlobalState
 from .agents import Agent
 from .exchange import Exchange
 from .basilisk_amm import ConstantProductPoolState
-from .money_market import MoneyMarket
+from .money_market import MoneyMarket, CDP
 from .omnipool_amm import OmnipoolState
 from .stableswap_amm import StableSwapPoolState
 from .arbitrage_agent import get_arb_swaps, execute_arb
+from .omnipool_router import OmnipoolRouter
 from typing import Callable
 import random
 # from numbers import Number
@@ -137,7 +138,7 @@ def back_and_forth(
     def strategy(state: GlobalState, agent_id: str):
         omnipool: OmnipoolState = state.pools[pool_id]
         agent: Agent = state.agents[agent_id]
-        assets = list(set(agent.asset_list) & set(omnipool.asset_list))
+        assets = list(set(agent.asset_list) & set(omnipool.liquidity.keys()))
         for asset in assets:
             # asset = agent.asset_list[i]
             dr = percentage / 2 * omnipool.liquidity[asset]
@@ -210,22 +211,33 @@ def withdraw_all(when: int) -> TradeStrategy:
     return TradeStrategy(strategy, name=f'withdraw all at time step {when}')
 
 
-def sell_all(pool_id: str, tkn_sell: str, tkn_buy: str, when: int = -1) -> TradeStrategy:
+def sell_all(pool_id: str,  tkn_buy: str, tkn_sell: str=None, when: int = -1) -> TradeStrategy:
 
     class Strategy:
         def __init__(self):
             self.when = when
             self.done = False
+            self.tkn_sell = tkn_sell
 
         def execute(self, state: GlobalState, agent_id: str) -> GlobalState:
             agent = state.agents[agent_id]
-            if self.done or not agent.holdings[tkn_sell] or state.time_step < self.when:
+            if self.done or state.time_step < self.when:
                 return state
             if self.when > 0:
                 self.done = True
-            return state.execute_swap(
-                pool_id, agent_id, tkn_sell, tkn_buy, sell_quantity=agent.holdings[tkn_sell]
-            )
+            exchange = state.pools[pool_id]
+            if self.tkn_sell is None:
+                for tkn in agent.holdings:
+                    if agent.holdings[tkn] > 0 and tkn != tkn_buy:
+                        exchange.swap(
+                            tkn_sell=tkn, tkn_buy=tkn_buy, agent=agent, sell_quantity=agent.holdings[tkn]
+                        )
+            else:
+                exchange.swap(
+                    tkn_sell=self.tkn_sell, tkn_buy=tkn_buy, agent=agent, sell_quantity=agent.holdings[self.tkn_sell]
+                )
+            return state
+
 
     return TradeStrategy(Strategy().execute, name=f'sell all {tkn_sell} for {tkn_buy}')
 
@@ -429,7 +441,12 @@ def omnipool_arbitrage(pool_id: str, arb_precision=1, skip_assets=None, frequenc
         if state.time_step % frequency != 0:
             return state
 
-        omnipool: OmnipoolState = state.pools[pool_id]
+        omnipool: OmnipoolState = (
+            state.pools[pool_id]
+            if pool_id in state.pools
+            and isinstance(state.pools[pool_id], OmnipoolState)
+            else [pool for pool in state.pools.values() if isinstance(pool, OmnipoolRouter)][0].exchanges[pool_id]
+        )
         agent: Agent = state.agents[agent_id]
         if not isinstance(omnipool, OmnipoolState):
             raise AssertionError()
@@ -441,10 +458,10 @@ def omnipool_arbitrage(pool_id: str, arb_precision=1, skip_assets=None, frequenc
         asset_fees = []
         lrna_fees = []
         skip_ct = 0
-        usd_index = omnipool.asset_list.index(omnipool.stablecoin)
+        usd_index = list(omnipool.liquidity.keys()).index(omnipool.stablecoin)
 
-        for i in range(len(omnipool.asset_list)):
-            asset = omnipool.asset_list[i]
+        for i in range(len(omnipool.liquidity)):
+            asset = list(omnipool.liquidity.keys())[i]
 
             if asset in skip_assets:  # we may not want to arb all assets
                 skip_ct += 1
@@ -1081,8 +1098,11 @@ def general_arbitrage(exchanges: list[Exchange], equivalency_map: dict = None, c
 def liquidate_cdps(pool_id: str = None, iters: int = 16) -> TradeStrategy:
     def strategy(state: GlobalState, agent_id: str) -> GlobalState:
         agent = state.agents[agent_id]
-        pools: list[Exchange] = [state.pools[pool_id]] if pool_id else list(state.pools.values())
-        mms = list(filter(lambda p: isinstance(p, MoneyMarket), state.pools.values()))
+        pools: set[Exchange] = {state.pools[pool_id]} if pool_id else set(state.pools.values())
+        for pool in list(pools):
+            if hasattr(pool, 'exchanges'):
+                pools |= set(pool.exchanges.values())
+        mms = [pool for pool in state.pools.values() if isinstance(pool, MoneyMarket)]
         for mm in mms:
             for cdp in mm.cdps:
                 potential_liquidations = True
@@ -1112,7 +1132,7 @@ def liquidate_cdps(pool_id: str = None, iters: int = 16) -> TradeStrategy:
                             if pool.buy_spot(debt_tkn, collateral_tkn) > collateral_max / debt_max:
                                 # no profitable liquidation possible
                                 continue
-                            debt_paid = debt_max
+                            debt_paid = min(debt_max, pool.buy_limit(tkn_buy=debt_tkn, tkn_sell=collateral_tkn))
                             profit = collateral_max - pool.calculate_sell_from_buy(
                                 tkn_buy=debt_tkn, tkn_sell=collateral_tkn, buy_quantity=debt_paid
                             )
@@ -1131,7 +1151,7 @@ def liquidate_cdps(pool_id: str = None, iters: int = 16) -> TradeStrategy:
                                 if profit_up > profit:
                                     debt_paid = debt_up
                                     profit = profit_up
-                                elif profit_down > profit:
+                                elif profit_down > profit or profit_down == -float('inf'):
                                     debt_paid = debt_down
                                     profit = profit_down
                                 else:
@@ -1188,6 +1208,8 @@ def schedule_swaps(pool_id: str, swaps: list[list[dict]]):
             if self.initial_time_step == -1:
                 self.initial_time_step = state.time_step
             agent = state.agents[agent_id]
+            if len(swaps) <= state.time_step - self.initial_time_step:
+                return state
             for trade in swaps [state.time_step - self.initial_time_step]:
                 state.pools[pool_id].swap(
                     tkn_sell=trade['tkn_sell'],

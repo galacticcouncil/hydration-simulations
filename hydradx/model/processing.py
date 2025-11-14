@@ -476,8 +476,8 @@ def save_omnipool(omnipool_router: OmnipoolRouter, path: str = './archive'):
                 'LRNA': omnipool.lrna,
                 'shares': omnipool.shares,
                 'protocol_shares': omnipool.protocol_shares,
-                'asset_fee': {tkn: omnipool.asset_fee(tkn) for tkn in omnipool.asset_list},
-                'lrna_fee': {tkn: omnipool.lrna_fee(tkn) for tkn in omnipool.asset_list},
+                'asset_fee': {tkn: omnipool.asset_fee(tkn) for tkn in omnipool.liquidity},
+                'lrna_fee': {tkn: omnipool.lrna_fee(tkn) for tkn in omnipool.liquidity},
                 'stableswap_pools': [
                     {
                         'tokens': pool.liquidity,
@@ -1042,7 +1042,8 @@ def get_current_money_market():
         response.raise_for_status()  # Raise HTTPError for bad responses (4xx or 5xx)
         borrowers_data = response.json()["borrowers"]
     except requests.exceptions.RequestException as e:
-        raise Exception(f"Error fetching borrowers from API: {e}")
+        # raise ConnectionError(f"Error fetching borrowers from API: {e}")
+        borrowers_data = []
 
     # remove duplicated entries
     seen = set()

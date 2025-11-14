@@ -4,12 +4,16 @@ import sys, os
 import streamlit as st
 import copy
 import pytest
+import numpy as np
 
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../"))
 sys.path.append(project_root)
 
 from hydradx.model.amm.omnipool_amm import OmnipoolState
 from hydradx.model.amm.agents import Agent
+from hydradx.model.plot_utils import color_gradient
+from hydradx.model.indexer_utils import get_current_omnipool, get_omnipool_trades, get_current_omnipool_assets, \
+    get_asset_info_by_ids
 
 st.markdown("""
     <style>
@@ -51,21 +55,34 @@ def remove_readd(pool: OmnipoolState, agent: Agent):
         agent=agent,
         tkn_remove='HDX'
     )
-    print(f"LP removed liquidity as {agent.all_holdings()}")
+    # print(f"LP removed liquidity as {agent.all_holdings()}")
     if agent.get_holdings('LRNA') > 0:
         start_hdx = agent.get_holdings('HDX')
         start_lrna = agent.get_holdings('LRNA')
         hdx_at_spot_price = 1 / pool.lrna_price('HDX') * start_lrna
         pool.swap(agent=agent, tkn_sell='LRNA', tkn_buy='HDX', sell_quantity=agent.get_holdings('LRNA'))
         hdx_back = agent.get_holdings('HDX') - start_hdx
-        print(f"LP swapped {start_lrna} LRNA to HDX, losing {hdx_at_spot_price - hdx_back} HDX in fees and slippage")
-    print(
-        f"LP adds {round(agent.get_holdings('HDX'), 3)} HDX back to pool ({round(pool.liquidity['HDX'], 3)} HDX) as liquidity")
+        # print(f"LP swapped {start_lrna} LRNA to HDX, losing {hdx_at_spot_price - hdx_back} HDX in fees and slippage")
+    # print(
+    #     f"LP adds {round(agent.get_holdings('HDX'), 3)} HDX back to pool ({round(pool.liquidity['HDX'], 3)} HDX) as liquidity")
     pool.add_liquidity(
         agent=agent,
         tkn_add='HDX',
         quantity=agent.get_holdings('HDX')
     )
+
+
+def linear_increasing_sequence(start_value, end_value, sequence_length):
+    weights = list(range(1, sequence_length))
+    total_weight = sum(weights)
+    scale = (end_value - start_value) / total_weight
+
+    seq = [start_value]
+    acc = start_value
+    for w in weights:
+        acc += w * scale
+        seq.append(acc)
+    return seq
 
 
 def scenario_1():
@@ -333,4 +350,141 @@ def scenario_2():
         ax2.legend(loc="upper center")
         st.pyplot(fig2)
 
-scenario_2()
+
+def scenario_3():
+
+    with st.sidebar:
+        low_price = st.number_input('low price:', min_value=0.01, max_value=1.0, value=0.98)
+        high_price = st.number_input('high price:', min_value=1.0, max_value=100.0, value=1.02)
+        max_lp_holdings = st.number_input('max lp holdings %:', min_value=10, max_value=99, value=50)
+    steps = 50
+    buys = linear_increasing_sequence(start_value=1, end_value=low_price, sequence_length=steps // 2)[:1:-1]
+    sells = linear_increasing_sequence(start_value=1, end_value=high_price, sequence_length=steps // 2)[1:]
+    prices = buys + [1] + sells
+    loss_trend = {}
+
+    initial_omnipool = OmnipoolState(
+        tokens={"HDX": {'liquidity': 1_000_000, 'LRNA': 1_000_000},
+                "USDT": {'liquidity': 1_000_000, 'LRNA': 1_000_000},
+                "DOT": {'liquidity': 1_000_000, 'LRNA': 1_000_000}
+        },
+        asset_fee=0.25,
+        lrna_fee=0.25,
+        withdrawal_fee=False
+    )
+    trade_agent = Agent(enforce_holdings=False)
+    lp_percent_array = [0.01 * i for i in range(1, max_lp_holdings + 1)]
+    for lp_percent in lp_percent_array:
+        loss_trend[lp_percent] = []
+        for price in prices:
+            omnipool = initial_omnipool.copy()
+            lp_agent = Agent(holdings={"HDX": omnipool.liquidity['HDX'] * lp_percent})
+            omnipool.liquidity['HDX'] *= (1 - lp_percent)
+            omnipool.lrna['HDX'] *= (1 - lp_percent)
+            omnipool.add_liquidity(
+                agent=lp_agent,
+                tkn_add='HDX',
+                quantity=lp_agent.holdings['HDX']
+            )
+            assert omnipool.lrna['HDX'] == pytest.approx(1_000_000, rel=1e-12)
+            assert omnipool.liquidity['HDX'] == pytest.approx(1_000_000, rel=1e-12)
+            initial_value = omnipool.cash_out(lp_agent, denomination='LRNA')
+            omnipool.trade_to_price(agent=trade_agent, tkn='HDX', target_price=price)
+            remove_readd(omnipool, lp_agent)
+            omnipool.trade_to_price(agent=trade_agent, tkn='HDX', target_price=1)
+            remove_readd(omnipool, lp_agent)
+            omnipool.trade_to_price(agent=trade_agent, tkn='HDX', target_price=1)
+            # remove_readd(omnipool, lp_agent)
+            if omnipool.lrna_price('HDX') != pytest.approx(1, rel=1e-12):
+                raise ValueError(f"hdx price == {omnipool.lrna_price('HDX')}, not 1")
+            final_value = omnipool.cash_out(lp_agent, denomination='LRNA')
+            loss = (initial_value - final_value) / lp_agent.initial_holdings['HDX']
+            loss_trend[lp_percent].append(loss)
+
+    fig, ax = plt.subplots(figsize=(16, 7))
+    colors = color_gradient(length = len(lp_percent_array), color1=(255, 0, 198), color2=(0, 0, 192))
+    for i, lp_percent in enumerate(lp_percent_array):
+        ax.plot(
+            prices, loss_trend[lp_percent],
+            label=f"LP pct: {round(lp_percent * 100, 1)}%" if lp_percent in [0.01, 0.25, 0.5, 0.75, 0.99] else None,
+            color=colors[i]
+        )
+    ax.set_xlabel('price change')
+    ax.set_ylabel('LP loss as a percent of deposit')
+    ax.legend()
+    st.pyplot(fig)
+
+def scenario_4(block_number=None):
+    max_block_number = 9300000  # get_current_block_height() - 1000
+    block_number = st.number_input(
+        'block number:', min_value=1, max_value=max_block_number, value=block_number or 9_000_000
+    )
+    trades = get_omnipool_trades(
+        min_block=block_number, max_block=block_number + 1000
+    )
+    pass
+    initial_omnipool = get_current_omnipool(block_number)
+    trade_agent_1 = Agent(enforce_holdings=False, unique_id="trader1")
+    trade_agent_2 = Agent(enforce_holdings=False, unique_id="trader2")
+    initial_lp_agent = Agent(holdings={"HDX": initial_omnipool.liquidity['HDX'] / 4})
+    initial_omnipool.liquidity["HDX"] *= 3/4
+    initial_omnipool.lrna["HDX"] *= 3/4
+    initial_omnipool.add_liquidity(
+        agent=initial_lp_agent,
+        tkn_add='HDX',
+        quantity=initial_lp_agent.holdings['HDX']
+    )
+    lp_agent_1 = initial_lp_agent.copy()  # agent now holds 25% of the pool
+    lp_agent_2 = initial_lp_agent.copy()
+    lp_agent_1.unique_id = "lp1"
+    lp_agent_2.unique_id = "lp2"
+    omnipool1 = initial_omnipool.copy()
+    omnipool2 = initial_omnipool.copy()
+    events = []
+    fails = []
+    divergence = {pool.unique_id: {tkn: {} for tkn in omnipool1.liquidity.keys()} for pool in (omnipool1, omnipool2)}
+    next_trade = trades.pop(0)
+    for block in range(block_number, block_number + 1000):
+        while next_trade and next_trade['block_number'] == block:
+            trade = next_trade
+            next_trade = trades.pop(0) if trades else None
+            tkn_sell = trade['assetIn']
+            tkn_buy = trade['assetOut']
+            if tkn_buy == "H2O":
+                tkn_buy = "LRNA"
+            if tkn_sell == "H2O":
+                tkn_sell = "LRNA"
+            for omnipool, trade_agent in [(omnipool1, trade_agent_1), (omnipool2, trade_agent_2)]:
+                omnipool.fail = ""
+                agent_start_holdings = trade_agent.get_holdings(tkn_buy)
+                omnipool.swap(
+                    agent=trade_agent,
+                    tkn_buy=tkn_buy,
+                    tkn_sell=tkn_sell,
+                    sell_quantity=trade['amountIn']
+                )
+                buy_quantity = trade_agent.get_holdings(tkn_buy) - agent_start_holdings
+                divergence[omnipool.unique_id][tkn_buy][block] = abs(buy_quantity - trade['amountOut']) / trade['amountOut']
+                if omnipool.fail:
+                    fails.append((omnipool.unique_id, trade))
+
+        remove_readd(omnipool1, lp_agent_1)
+        if omnipool2.current_withdrawal_fee == omnipool2.min_withdrawal_fee:
+            remove_readd(omnipool2, lp_agent_2)
+        events.append({
+            'pools': {pool.unique_id: pool.copy() for pool in (omnipool1, omnipool2)},
+            'agents': {agent.unique_id: agent.copy() for agent in (lp_agent_1, lp_agent_2, trade_agent_1, trade_agent_2)},
+            'block': block
+        })
+        pass
+    fig, ax = plt.subplots(figsize=(16, 7))
+    ax.plot([e['block'] for e in events], [e['agents']['lp1'].get_holdings('HDX') for e in events], label='LP1 HDX')
+    ax.plot([e['block'] for e in events], [e['agents']['lp2'].get_holdings('HDX') for e in events], label='LP1 HDX')
+    ax.legend()
+    st.pyplot(fig)
+    fig2, ax2 = plt.subplots(figsize=(16, 7))
+    for tkn in divergence:
+        ax2.plot(list(divergence[tkn].keys()), list(divergence[tkn].values()), label=tkn)
+    ax.legend()
+    st.pyplot(fig2)
+    pass

@@ -11,7 +11,8 @@ class Agent:
                  trade_strategy: any = None,
                  unique_id: str = 'agent',
                  nfts: dict[str: any] = None,
-                 enforce_holdings: bool = True
+                 enforce_holdings: bool = True,
+                 immune_to_fees: bool = False
                  ):
         """
         holdings should be in the form of:
@@ -34,6 +35,7 @@ class Agent:
         self.unique_id = unique_id
         self.nfts = nfts or {}
         self.enforce_holdings = enforce_holdings
+        self.immune_to_fees = immune_to_fees
 
     def __repr__(self):
         precision = 10
@@ -59,7 +61,8 @@ class Agent:
             trade_strategy=self.trade_strategy,
             unique_id=self.unique_id,
             nfts={id: copy.deepcopy(nft) for id, nft in self.nfts.items()},
-            enforce_holdings=self.enforce_holdings
+            enforce_holdings=self.enforce_holdings,
+            immune_to_fees=self.immune_to_fees
         )
         copy_self.initial_holdings = {k: v for k, v in self.initial_holdings.items()}
         copy_self.asset_list = [tkn for tkn in self.asset_list]
@@ -69,6 +72,11 @@ class Agent:
         if tkn not in self.holdings:
             return 0
         return self.holdings[tkn]
+
+    def get_initial_holdings(self, tkn) -> float:
+        if tkn not in self.initial_holdings:
+            return 0
+        return self.initial_holdings[tkn]
 
     def all_holdings(self) -> dict[str, float]:
         return {k: v for k, v in self.holdings.items() if v != 0}
@@ -87,7 +95,7 @@ class Agent:
         self.holdings[tkn] += amt
 
     def remove(self, tkn: str, amt: float) -> None:
-        if not self.enforce_holdings or self.validate_holdings(tkn, amt):
+        if self.validate_holdings(tkn, amt):
             if tkn not in self.holdings:
                 self.holdings[tkn] = 0
             self.holdings[tkn] -= amt
