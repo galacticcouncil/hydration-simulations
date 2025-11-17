@@ -6,6 +6,7 @@ from .agents import Agent
 from .exchange import Exchange
 from .oracle import Oracle, Block, OracleArchiveState
 
+
 class AssetFeeCallable(Protocol):
     def __call__(self, tkn: str, delta_tkn: float = 0) -> float: ...
 
@@ -308,6 +309,22 @@ class OmnipoolState(Exchange):
     def min_asset_fee(self, value: float):
         self._asset_fee.minimum = value
 
+    @property
+    def current_asset_fee(self):
+        return self._asset_fee.current
+
+    @current_asset_fee.setter
+    def current_asset_fee(self, value: dict[str, float]):
+        self._asset_fee.current = value
+
+    @property
+    def current_lrna_fee(self):
+        return self._lrna_fee.current
+
+    @current_lrna_fee.setter
+    def current_lrna_fee(self, value: dict[str, float]):
+        self._lrna_fee.current = value
+
     def compute_dynamic_fee(self, fee: DynamicFee, tkn: str) -> float:
         if fee.amplification == 0:
             fee.last_updated[tkn] = self.time_step
@@ -321,6 +338,8 @@ class OmnipoolState(Exchange):
         # use this approximation to catch up to where we think the fee should be,
         # knowing there have been no trades until now
         num_blocks = int(self.time_step - fee.last_updated[tkn])
+        if num_blocks < 0:
+            print('warning: negative num_blocks in compute_dynamic_fee')
         m = min(self.dynamic_fee_precision, num_blocks)
         prev_volume = fee.volume_at_last_update[tkn] if tkn in fee.volume_at_last_update else 0
         prev_liquidity = fee.liquidity_at_last_update[tkn] if tkn in fee.liquidity_at_last_update else self.liquidity[tkn]
@@ -584,6 +603,8 @@ class OmnipoolState(Exchange):
 
             # gross asset out of XYK before asset fee
             b = buy_quantity / (1.0 - asset_fee)
+            b = buy_quantity / (1 - asset_fee)
+            asset_fee_total = b - buy_quantity
             if b >= A:
                 return math.inf, 0.0, 0.0, 0.0  # not enough liquidity
 
@@ -671,11 +692,8 @@ class OmnipoolState(Exchange):
             sell_quantity: float
     ) -> tuple[float, float, float, float]:
         """
-        Given a sell quantity, calculate how much tkn_buy we get out and
-        the fee breakdown:
-          - asset_fee_total (on tkn_buy)
-          - lrna_fee_total  (dynamic LRNA fee on sell pool)
-          - slip_fee_total  (slip fee on both pools)
+        Given a sell quantity, calculate the effective price, so we can execute it as a buy
+        Returns: (buy_quantity, asset_fee_total, lrna_fee_total, slip_fee_total)
         """
         asset_fee_total = 0.0
         lrna_fee_total = 0.0
@@ -865,7 +883,7 @@ class OmnipoolState(Exchange):
             lrna_fee_rate = self.compute_dynamic_fee(self._lrna_fee, tkn_sell)
 
             # also update both fees for each asset, because that's what they do in production
-            self.asset_fee(tkn_sell)
+            self.compute_dynamic_fee(self._asset_fee, tkn_sell)
             self.compute_dynamic_fee(self._lrna_fee, tkn_buy)
 
             # ---------- SELL-SIDE LRNA + SLIP FEE ----------
@@ -1077,15 +1095,16 @@ class OmnipoolState(Exchange):
 
         # 3) BUY LRNA -> PAY ASSET (output-specified LRNA)
         elif delta_qa > 0:
-            # This is tkn -> LRNA, specified by LRNA out
-            delta_ra_needed, _, lrna_fee_total, slip_fee_total = \
-                self.calculate_in_given_out(tkn_buy='LRNA', tkn_sell=tkn, buy_quantity=delta_qa)
-
-            if not math.isfinite(delta_ra_needed) or delta_ra_needed <= 0:
-                return self.fail_transaction('Trade infeasible')
-
-            delta_ra = -delta_ra_needed  # agent pays this much asset (negative change)
-
+            # buying LRNA
+            delta_ra, _, lrna_fee_total, slip_fee_total = self.calculate_in_given_out(
+                tkn_buy='LRNA', tkn_sell=tkn, buy_quantity=delta_qa
+            )
+            delta_ra = -delta_ra
+            delta_qi = -delta_qa - lrna_fee_total - slip_fee_total
+            lrna_fee_burn = self.lrna_fee_burn * lrna_fee_total
+            fee_deposit = lrna_fee_total - lrna_fee_burn + slip_fee_total
+            if delta_qi + self.lrna[tkn] <= 0:
+                return self.fail_transaction('insufficient lrna in pool')
             if not agent.validate_holdings(tkn, -delta_ra):
                 return self.fail_transaction('Agent has insufficient assets')
 
@@ -1137,8 +1156,8 @@ class OmnipoolState(Exchange):
                 return self.fail_transaction('insufficient lrna in pool')
 
             lrna_fee_burn = lrna_fee_total * self.lrna_fee_burn
-            fee_deposit = lrna_fee_total - lrna_fee_burn
-
+            fee_deposit = lrna_fee_total - lrna_fee_burn + slip_fee_total
+            delta_qa = -delta_qi - lrna_fee_total - slip_fee_total
             self.lrna[tkn] += delta_qi
             self.liquidity[tkn] += sell_asset
 
