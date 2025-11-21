@@ -836,55 +836,42 @@ class OmnipoolState(Exchange):
             if not agent.validate_holdings(i, delta_Ri):
                 return self.fail_transaction(f"Agent doesn't have enough {i}")
 
-            # LRNA change in the sell pool (negative: LRNA leaves the pool)
             delta_qi = self.lrna[tkn_sell] * -delta_Ri / (self.liquidity[tkn_sell] + delta_Ri)
 
-            # get the fees we will be using
             asset_fee = self.compute_dynamic_fee(self._asset_fee, tkn_buy)
             lrna_fee_rate = self.compute_dynamic_fee(self._lrna_fee, tkn_sell)
 
-            # also update both fees for each asset, because that's what they do in production
+            # also update both fees for each asset
             self.compute_dynamic_fee(self._asset_fee, tkn_sell)
             self.compute_dynamic_fee(self._lrna_fee, tkn_buy)
 
-            # ---------- SELL-SIDE LRNA + SLIP FEE ----------
             max_fee = self.max_lrna_fee
-
-            x = -delta_qi  # gross LRNA leaving the sell pool before LRNA-side fees (positive)
 
             slip_rate_uncapped = self.compute_slip_fee(tkn_sell, delta_qi)
             slip_rate_sell = max(0.0, min(slip_rate_uncapped, max_fee - lrna_fee_rate))
 
-            lrna_fee_total = x * lrna_fee_rate
-            slip_fee_sell_total = x * slip_rate_sell
+            lrna_fee_total = -delta_qi * lrna_fee_rate
+            slip_fee_sell_total = -delta_qi * slip_rate_sell
 
             lrna_fee_burn = self.lrna_fee_burn * lrna_fee_total
             fee_deposit = lrna_fee_total + slip_fee_sell_total - lrna_fee_burn
 
-            # LRNA that exits the sell pool and goes to the hub/buy side AFTER sell-side fees
-            D_gross = x - lrna_fee_total - slip_fee_sell_total
+            D_gross = lrna_fee_total - slip_fee_sell_total - delta_qi
             if D_gross <= 0:
                 return self.fail_transaction('trade infeasible after sell-side fees')
 
-            # ---------- BUY-SIDE SLIP FEE ----------
-            # LRNA is ENTERING the buy pool here, so delta_q > 0
             slip_rate_buy_uncapped = self.compute_slip_fee(tkn_buy, D_gross)
             slip_rate_buy = min(slip_rate_buy_uncapped, max_fee)
 
             slip_fee_buy_total = D_gross * slip_rate_buy
 
-            # Net LRNA that actually hits the buy pool XYK invariant
-            D_net = D_gross - slip_fee_buy_total
-            if D_net <= 0:
+            delta_Qt = D_gross - slip_fee_buy_total
+            if delta_Qt <= 0:
                 return self.fail_transaction('trade infeasible after buy-side slip fee')
 
             # For accounting / debugging if you want a combined figure
             slip_fee_total = slip_fee_sell_total + slip_fee_buy_total
 
-            # ---------- BUY-SIDE XYK + MINT (use D_net) ----------
-            delta_Qt = D_net  # net LRNA used for pricing in the buy pool
-
-            # LRNA minted to the buy pool as before, but now based on D_net
             delta_Qm = (
                     (self.lrna[tkn_buy] + delta_Qt)
                     * delta_Qt
