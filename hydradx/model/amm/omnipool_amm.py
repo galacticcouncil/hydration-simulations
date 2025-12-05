@@ -854,9 +854,9 @@ class OmnipoolState(Exchange):
             slip_fee_sell_total = -delta_qi * slip_rate_sell
 
             lrna_fee_burn = self.lrna_fee_burn * lrna_fee_total
-            fee_deposit = lrna_fee_total - lrna_fee_burn
+            lrna_fee_deposit = lrna_fee_total - lrna_fee_burn
 
-            D_gross = lrna_fee_total - slip_fee_sell_total - delta_qi
+            D_gross = -lrna_fee_total - slip_fee_sell_total - delta_qi
             if D_gross <= 0:
                 return self.fail_transaction('trade infeasible after sell-side fees')
 
@@ -888,11 +888,12 @@ class OmnipoolState(Exchange):
             )
 
             if self.lrna_fee_destination:
-                self.lrna_fee_destination.add("LRNA", fee_deposit)
+                self.lrna_fee_destination.add("LRNA", lrna_fee_deposit)
+                self.lrna_fee_destination.add("LRNA", slip_fee_total * (1 - self.lrna_fee_burn))
             else:
                 # split it between the pools
                 delta_qi += slip_fee_sell_total * (1 - self.lrna_fee_burn)
-                delta_qj += slip_fee_buy_total * (1 - self.lrna_fee_burn) + fee_deposit
+                delta_qj += slip_fee_buy_total * (1 - self.lrna_fee_burn) # + lrna_fee_deposit
 
             # ---------- per-block trade limits ----------
             if (
@@ -958,7 +959,7 @@ class OmnipoolState(Exchange):
             if not agent.validate_holdings('LRNA', sell_lrna):
                 return self.fail_transaction('Agent has insufficient lrna')
 
-            out_ra, asset_fee_total, lrna_fee_total, slip_fee_buy, slip_fee_sell = \
+            out_ra, _, _, asset_fee_total, lrna_fee_total, slip_fee_buy, slip_fee_sell = \
                 self.calculate_out_given_in(tkn_buy=tkn, tkn_sell='LRNA', sell_quantity=sell_lrna)
 
             if not math.isfinite(out_ra) or out_ra <= 0:
