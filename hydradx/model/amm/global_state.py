@@ -12,18 +12,26 @@ from .otc import OTC
 
 class GlobalState:
     def __init__(self,
-                 agents: dict[str: Agent],
+                 agents: dict[str: Agent] or list[Agent],
                  pools: dict[str: Exchange] or list[Exchange],
-                 otcs: list[OTC] = [],
+                 otcs: list[OTC] = None,
                  external_market: dict[str: float] = None,
                  evolve_function: Callable = None,
                  save_data: dict = None,
                  archive_all: bool = True,
                  ):
         self.external_market = external_market or {}
+        if otcs is None:
+            otcs = []
         if 'USD' not in self.external_market:
             self.external_market = {'USD': 1, **self.external_market}
 
+        if isinstance(agents, list):
+            self.agents = {agent.unique_id: agent for agent in agents}
+        else:
+            self.agents = agents
+            for agent_name in self.agents:
+                self.agents[agent_name].unique_id = agent_name
         # get a list of all assets contained in any member of the state
         if isinstance(pools, list):
             self.pools = {pool.unique_id: pool for pool in pools}
@@ -33,16 +41,14 @@ class GlobalState:
                 self.pools[pool_name].unique_id = pool_name
         self.asset_list = list(set(
             [asset for pool in self.pools.values() for asset in pool.asset_list]
-            + [asset for agent in agents.values() for asset in agent.asset_list]
+            + [asset for agent in self.agents.values() for asset in agent.asset_list]
             + list(self.external_market.keys())
         ))
-        self.agents = agents
-        for agent_name in self.agents:
-            self.agents[agent_name].unique_id = agent_name
-        for agent in self.agents.values():
-            for asset in self.asset_list:
-                if asset not in agent.holdings:
-                    agent.holdings[asset] = 0
+
+        # for agent in self.agents.values():
+        #     for asset in self.asset_list:
+        #         if asset not in agent.holdings:
+        #             agent.holdings[asset] = 0
         self.evolve_function = evolve_function
         self.datastreams = save_data
         self.save_data = {
