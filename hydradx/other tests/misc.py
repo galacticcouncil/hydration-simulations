@@ -108,7 +108,7 @@ def test_adot_minting_lp():
         omnipool.liquidity['aDOT'] *= 1 + yield_per_block  # simulate aDOT appreciation
         no_lp_omnipool.liquidity['aDOT'] *= 1 + yield_per_block  # simulate aDOT appreciation
         holder.holdings['aDOT'] *= 1 + yield_per_block
-        omnipool.lrna['aDOT'] *= 1 + yield_per_block  # simulate LRNA appreciation
+        # omnipool.lrna['aDOT'] *= 1 + yield_per_block  # simulate LRNA appreciation
 
     arbitrageur = Agent(
         enforce_holdings=False,
@@ -130,6 +130,8 @@ def test_adot_minting_lp():
         tkn_remove = 'aDOT'
     )
     diff = lp.holdings['aDOT'] - holder.holdings['aDOT']
+    holder_gain = holder.holdings['aDOT'] - holder.initial_holdings['aDOT']
+    reward_gain_pct = (holder_gain + diff) / holder_gain * 100
     pass
 
 
@@ -162,7 +164,7 @@ def test_lp_results_with_slip_fees():
     )
     omnipool = initial_omnipool.copy()
     treasury_agent = Agent(enforce_holdings=False, unique_id='treasury')
-    # omnipool.lrna_fee_destination = treasury_agent
+    omnipool.lrna_fee_destination = treasury_agent
 
     trader = Agent(enforce_holdings=False, unique_id='trader')
     for i in range(100):
@@ -240,9 +242,10 @@ def test_out_given_in():
         lrna_fee=0.0005
     )
     omnipool.max_lrna_fee = 0.1
+    omnipool.max_asset_fee = 0.1
 
     trader = Agent(enforce_holdings=False, unique_id='trader')
-    hdx_sell_quantity = 1002340
+    hdx_sell_quantity = mpf(1002340)
     usd_buy, delta_q_hdx, delta_q_usd, asset_fee_total, lrna_fee_total, slip_fee_buy, slip_fee_sell = omnipool.calculate_out_given_in(
         tkn_buy='USD', tkn_sell='HDX', sell_quantity=hdx_sell_quantity
     )
@@ -271,6 +274,7 @@ def test_out_given_in():
 
 
 def test_lp_loss_with_deposit():
+    treasury_agent = Agent(enforce_holdings=False, unique_id='treasury')
     omnipool = OmnipoolState(
         tokens={
             'HDX': {'liquidity': mpf(10000000), 'LRNA': mpf(1000000)},
@@ -279,7 +283,8 @@ def test_lp_loss_with_deposit():
         preferred_stablecoin='USD',
         slip_factor=1,
         lrna_fee=0.0001,
-        asset_fee=0.00125
+        asset_fee=0.00125,
+        lrna_fee_destination=treasury_agent
     )
     lp = Agent(holdings={'HDX': mpf(10000)})
     omnipool.add_liquidity(
