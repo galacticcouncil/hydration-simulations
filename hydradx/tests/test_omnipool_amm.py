@@ -3078,30 +3078,6 @@ def test_calculate_buy_vs_sell():
         raise AssertionError('Calculate buy vs sell slip fees do not match.')
 
 
-def test_price_after_fees():
-    omnipool = OmnipoolState(
-        tokens={
-            'HDX': {'liquidity': mpf(10000000), 'LRNA': mpf(10000)},
-            'USD': {'liquidity': mpf(100000), 'LRNA': mpf(10000)}
-        },
-        asset_fee=0.00125,
-        lrna_fee=0.00025,
-        slip_factor=1.0,  # 1.0,
-        lrna_fee_burn=1.0,
-        lrna_mint_pct=1.0
-    )
-    omnipool.max_lrna_fee = 0.01
-    agent = Agent(enforce_holdings=False)
-    start_price = omnipool.lrna_price("HDX")
-    for _ in range(10):
-        omnipool.swap(agent, tkn_sell='HDX', tkn_buy='USD', sell_quantity=mpf(100000))
-
-    for _ in range(10):
-        omnipool.swap(agent, tkn_sell='USD', tkn_buy='HDX', buy_quantity=mpf(100000))
-    end_price = omnipool.lrna_price("HDX")
-    pass
-
-
 def test_lrna_without_mint_or_burn_is_constant():
     omnipool = OmnipoolState(
         tokens={
