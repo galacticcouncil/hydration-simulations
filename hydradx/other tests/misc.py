@@ -135,6 +135,44 @@ def test_adot_minting_lp():
     pass
 
 
+def calculate_arb(
+        omnipool: OmnipoolState,
+        asset_a: str,
+        asset_b: str,
+        target_price: float
+):
+    overshot = False
+    sell_quantity = 1
+    delta = 1
+    for j in range(200):
+        buy_quantity, delta_q_hdx, delta_q_usd, asset_fee_total, lrna_fee_total, slip_fee_buy, slip_fee_sell = omnipool.calculate_out_given_in(
+            tkn_buy=asset_b, tkn_sell=asset_a, sell_quantity=sell_quantity
+        )
+        after_state = {
+            asset_a: {
+                'liquidity': omnipool.liquidity[asset_a] + sell_quantity,
+                'LRNA': omnipool.lrna[asset_a] + delta_q_hdx
+            },
+            asset_b: {
+                'liquidity': omnipool.liquidity[asset_b] - buy_quantity,
+                'LRNA': omnipool.lrna[asset_b] + delta_q_usd
+            }
+        }
+        after_price = after_state[asset_a]['LRNA'] / after_state[asset_a]['liquidity'] * after_state[asset_b]['liquidity'] / \
+                      after_state[asset_b]['LRNA']
+        if after_price < target_price:
+            sell_quantity -= delta
+            overshot = True
+        else:
+            sell_quantity += delta
+        if overshot:
+            delta /= 2
+        else:
+            delta *= 2
+
+    return sell_quantity
+
+
 def test_lp_results_with_slip_fees():
     initial_omnipool = OmnipoolState(
         tokens={
@@ -142,11 +180,12 @@ def test_lp_results_with_slip_fees():
             'USD': {'liquidity': mpf(90), 'LRNA': mpf(90)}
         },
         preferred_stablecoin='USD',
-        slip_factor=0,
+        slip_factor=1.0,
         lrna_fee=0.0005,
         asset_fee=0.00125,
-        lrna_mint_pct=0,
-        lrna_fee_burn=0
+        # lrna_mint_pct=0,
+        # lrna_fee_burn=0,
+        withdrawal_fee=False
     )
     initial_omnipool.max_lrna_fee = 0.05
     initial_omnipool.max_asset_fee = 0.05
@@ -167,56 +206,47 @@ def test_lp_results_with_slip_fees():
     omnipool.lrna_fee_destination = treasury_agent
 
     trader = Agent(enforce_holdings=False, unique_id='trader')
-    for i in range(100):
+    for i in range(1):
         omnipool.swap(
             agent=trader,
             tkn_sell='USD',
             tkn_buy='HDX',
-            sell_quantity=mpf(1)
+            sell_quantity=mpf(10)
         )
-        hdx_sell_quantity = initial_omnipool.liquidity['HDX'] - omnipool.liquidity['HDX']
-        delta = hdx_sell_quantity / 2
         target_price = initial_omnipool.usd_price('HDX')
-        for j in range(200):
-            usd_buy, delta_q_hdx, delta_q_usd, asset_fee_total, lrna_fee_total, slip_fee_buy, slip_fee_sell = omnipool.calculate_out_given_in(
-                tkn_buy='USD', tkn_sell='HDX', sell_quantity=hdx_sell_quantity
-            )
-            after_state = {
-                'HDX': {
-                    'liquidity': omnipool.liquidity['HDX'] + hdx_sell_quantity,
-                    'LRNA': omnipool.lrna['HDX'] + delta_q_hdx + slip_fee_sell
-                },
-                'USD': {
-                    'liquidity': omnipool.liquidity['USD'] - usd_buy,
-                    'LRNA': omnipool.lrna['USD'] + delta_q_usd + slip_fee_buy
-                }
-            }
-            after_price = after_state['HDX']['LRNA'] / after_state['HDX']['liquidity'] * after_state['USD']['liquidity'] / after_state['USD']['LRNA']
-            if after_price < target_price:
-                hdx_sell_quantity -= delta
-            else:
-                hdx_sell_quantity += delta
-            delta /= 2
-
+        sell_quantity = calculate_arb(
+            omnipool=omnipool,
+            asset_a='HDX',
+            asset_b='USD',
+            target_price=target_price
+        )
         omnipool.swap(
             agent=trader,
             tkn_sell='HDX',
             tkn_buy='USD',
-            sell_quantity=hdx_sell_quantity
+            sell_quantity=sell_quantity
         )
+
+    print("adding LRNA back into pools...")
+    usd_lrna_ratio = omnipool.lrna['USD'] / sum(omnipool.lrna.values())
+    omnipool.lrna['USD'] += treasury_agent.holdings['LRNA'] * usd_lrna_ratio
+    omnipool.lrna['HDX'] += treasury_agent.holdings['LRNA'] * (1 - usd_lrna_ratio)
+
     pre_withdraw_omnipool = omnipool.copy()
     print(f"""
         after swaps:
         (HDX: {round(omnipool.liquidity['HDX'], 6)}, LRNA: {round(omnipool.lrna['HDX'], 6)})
         (USD: {round(omnipool.liquidity['USD'], 6)}, LRNA: {round(omnipool.lrna['USD'], 6)})
+        HDX/USD price: {pre_withdraw_omnipool.usd_price('HDX')}
     """)
-    omnipool.remove_liquidity(
-        agent=lp_usd,
-        tkn_remove='USD'
-    )
+
     omnipool.remove_liquidity(
         agent=lp_hdx,
         tkn_remove='HDX'
+    )
+    omnipool.remove_liquidity(
+        agent=lp_usd,
+        tkn_remove='USD'
     )
     diff_usd = lp_usd.get_holdings('USD') - lp_usd.initial_holdings['USD']
     diff_hdx = (lp_hdx.get_holdings('HDX') - lp_hdx.initial_holdings['HDX']) * omnipool.usd_price('HDX')
@@ -235,28 +265,30 @@ def test_out_given_in():
             'USD': {'liquidity': mpf(90000), 'LRNA': mpf(90000)}
         },
         preferred_stablecoin='USD',
-        # slip_factor=1,
-        lrna_fee_burn=0,
+        slip_factor=1,
+        lrna_fee_burn=0.5,
         lrna_mint_pct=0,
         asset_fee=0.0025,
-        lrna_fee=0.0005
+        lrna_fee=0.0005,
+        # lrna_fee_destination=Agent(enforce_holdings=False, unique_id='treasury')
     )
     omnipool.max_lrna_fee = 0.1
     omnipool.max_asset_fee = 0.1
 
     trader = Agent(enforce_holdings=False, unique_id='trader')
     hdx_sell_quantity = mpf(1002340)
-    usd_buy, delta_q_hdx, delta_q_usd, asset_fee_total, lrna_fee_total, slip_fee_buy, slip_fee_sell = omnipool.calculate_out_given_in(
-        tkn_buy='USD', tkn_sell='HDX', sell_quantity=hdx_sell_quantity
-    )
+    usd_buy, delta_q_hdx, delta_q_usd, asset_fee_total, lrna_fee_total, slip_fee_buy, slip_fee_sell \
+        = omnipool.calculate_out_given_in(
+            tkn_buy='USD', tkn_sell='HDX', sell_quantity=hdx_sell_quantity
+        )
     after_state = {
         'HDX': {
             'liquidity': omnipool.liquidity['HDX'] + hdx_sell_quantity,
-            'LRNA': omnipool.lrna['HDX'] + delta_q_hdx + slip_fee_sell
+            'LRNA': omnipool.lrna['HDX'] + delta_q_hdx
         },
         'USD': {
             'liquidity': omnipool.liquidity['USD'] - usd_buy,
-            'LRNA': omnipool.lrna['USD'] + delta_q_usd + slip_fee_buy
+            'LRNA': omnipool.lrna['USD'] + delta_q_usd
         }
     }
 
@@ -275,21 +307,47 @@ def test_out_given_in():
 
 def test_lp_loss_with_deposit():
     treasury_agent = Agent(enforce_holdings=False, unique_id='treasury')
-    omnipool = OmnipoolState(
+    initial_omnipool = OmnipoolState(
         tokens={
             'HDX': {'liquidity': mpf(10000000), 'LRNA': mpf(1000000)},
-            'USD': {'liquidity': mpf(100000), 'LRNA': mpf(100000)}
+            'USD': {'liquidity': mpf(10000000), 'LRNA': mpf(100000000)}
         },
         preferred_stablecoin='USD',
-        slip_factor=1,
-        lrna_fee=0.0001,
-        asset_fee=0.00125,
-        lrna_fee_destination=treasury_agent
+        # slip_factor=1,
+        lrna_fee=0,
+        asset_fee=0,
+        lrna_fee_destination=treasury_agent,
+        withdrawal_fee=False,
+        lrna_mint_pct=0,
+        lrna_fee_burn=0
     )
+    omnipool = initial_omnipool.copy()
     lp = Agent(holdings={'HDX': mpf(10000)})
+    lp_usd = Agent(holdings={'USD': mpf(1000)})
+    start_value = lp.holdings['HDX'] * omnipool.usd_price('HDX')
     omnipool.add_liquidity(
         agent=lp,
         tkn_add='HDX',
         quantity=lp.holdings['HDX']
     )
-    omnipool.liquidity
+    omnipool.add_liquidity(
+        agent=lp_usd,
+        tkn_add='USD',
+        quantity=lp_usd.holdings['USD']
+    )
+    omnipool.lrna['HDX'] *= 2  # simulate external price change
+    sell_quantity = calculate_arb(
+        omnipool=omnipool,
+        asset_a='USD',
+        asset_b='HDX',
+        target_price=1 / initial_omnipool.usd_price('HDX')
+    )
+    omnipool.swap(
+        agent=Agent(enforce_holdings=False),
+        tkn_sell='USD',
+        tkn_buy='HDX',
+        sell_quantity=sell_quantity
+    )
+    end_value = omnipool.cash_out(lp, denomination='USD')  # gains, but less than 50% of the liquidity increase
+    end_value_usd = omnipool.cash_out(lp_usd, denomination='USD') # loses a bit
+    pass
