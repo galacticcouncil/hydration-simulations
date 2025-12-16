@@ -53,7 +53,7 @@ def plot_trade_sizes(tkn_buy, tkn_sell, router, omnipool):
         outputs = omnipool.calculate_out_given_in(tkn_buy=tkn_buy, tkn_sell=tkn_sell, sell_quantity=sell_quantity)
         buy_quantity, delta_qi, delta_qj, asset_fee_total, lrna_fee_total, slip_fee_buy, slip_fee_sell = outputs
         slip_fee_total = slip_fee_buy + slip_fee_sell
-        slip_fee_percent = slip_fee_total / (-delta_qi + slip_fee_sell)
+        slip_fee_percent = slip_fee_total / -delta_qi
         print(f"${trade_size:.2f} worth of {tkn_sell} sold for {tkn_buy} = {slip_fee_percent * 100:.4f}% slip fee")
         fees.append(slip_fee_percent)
 
