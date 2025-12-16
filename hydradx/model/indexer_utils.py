@@ -589,7 +589,7 @@ def get_current_omnipool(block_number = None):
     liquidity_data = get_omnipool_liquidity(block_number=max_block, assets=asset_info)
 
     asset_fee, lrna_fee = get_current_omnipool_fees(
-        asset_info={tkn: asset_info[tkn] for tkn in asset_ids},
+        asset_info={tkn: asset_info[tkn] for tkn in asset_info},
         block_number=block_number
     )
 
