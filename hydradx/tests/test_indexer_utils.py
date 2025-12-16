@@ -18,9 +18,9 @@ def test_get_latest_stableswap_data():
     """
     Test the get_latest_stableswap_data function.
     """
-    pool_id = 102  # 2-Pool
-    block_number = 9100000
-    pool_data = get_latest_stableswap_data(pool_id, block_number)
+    pool_id = 690  # 2-Pool
+    # block_number = 9100000
+    pool_data = get_latest_stableswap_data(pool_id)
     assert len(pool_data['liquidity']) == 2
     pool_id = 999
     with pytest.raises(IndexError):
