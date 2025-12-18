@@ -197,3 +197,14 @@ def test_slip_fees():
     from hydradx.apps.fees import slip_fees_comparison
     slip_fees_comparison.run_and_plot()
 
+
+def test_slip_fees_chart():
+    from hydradx.apps.fees import slip_fees_chart
+    router = slip_fees_chart.load_omnipool_router()
+    omnipool = router.exchanges['omnipool']
+    omnipool.asset_fee = 0
+    omnipool.lrna_fee = 0
+    omnipool.max_lrna_fee = 1
+    omnipool.max_asset_fee = 1
+    omnipool.slip_factor = 1.0
+    slip_fees_chart.plot_trade_sizes("HDX", "DOT", router, omnipool)
