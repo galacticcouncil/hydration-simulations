@@ -1457,13 +1457,11 @@ class OmnipoolState(Exchange):
             value += tkn_value
         return value
 
-    def cash_out(self, agent: Agent, prices: dict[str: float] = None, denomination: str = None) -> float:
+    def cash_out(self, agent: Agent, prices: dict[str: float] = None, denomination: str = 'LRNA') -> float:
         """
         return the value of the agent's holdings if they withdraw all liquidity
         and then sell at current spot prices
         """
-        if denomination is None:
-            denomination = 'LRNA'
         if prices is None:
             prices = {tkn: self.price(tkn, denomination) for tkn in self.asset_list}
 
