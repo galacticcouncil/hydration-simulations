@@ -1,6 +1,9 @@
+import datetime
 import json
 import requests
-
+import os
+import concurrent.futures
+from pathlib import Path
 from hydradx.model.amm.omnipool_amm import OmnipoolState, DynamicFee
 from hydradx.model.amm.omnipool_router import OmnipoolRouter
 from hydradx.model.amm.stableswap_amm import StableSwapPoolState
@@ -49,6 +52,156 @@ def query_indexer(url: str, query: str, variables: dict = None) -> dict:
     if 'errors' in return_val:
         raise ValueError(return_val['errors'][0]['message'])
     return return_val
+
+
+BASE_DIR = Path(__file__).resolve().parent
+CACHE_DIR = BASE_DIR / "cache"
+BLOCK_CACHE_FILE = CACHE_DIR / "omnipool_block_cache.json"
+
+
+def chunks(lst, n):
+    for i in range(0, len(lst), n):
+        yield lst[i:i + n]
+
+
+def load_block_cache():
+    if BLOCK_CACHE_FILE.exists():
+        with open(BLOCK_CACHE_FILE, 'r') as f:
+            return json.load(f)
+    return {}
+
+
+def save_block_cache(cache):
+    with open(BLOCK_CACHE_FILE, 'w') as f:
+        json.dump(cache, f, indent=2, sort_keys=True)
+
+
+def get_blocks_at_timestamps(timestamps, max_workers=10):
+    """
+    Returns a dict {timestamp: block_number}.
+    Uses a persistent daily cache: {"YYYY-MM-DD": block_int}
+    """
+    cache = load_block_cache()
+
+    # 1. Identify necessary 'Anchors' (Midnights)
+    # We store the datetime objects to help with querying, but use date strings for keys.
+    needed_anchors = {}  # { "YYYY-MM-DD": datetime_obj }
+
+    if not isinstance(timestamps, list):
+        timestamps = [timestamps]
+    timestamps = [
+        ts if isinstance(ts, datetime.datetime) else datetime.datetime.combine(ts, datetime.time())
+        for ts in timestamps
+    ]
+
+    for ts in timestamps:
+        # Normalize to midnight
+        start_of_day = ts.replace(hour=0, minute=0, second=0, microsecond=0)
+        end_of_day = start_of_day + datetime.timedelta(days=1)
+
+        needed_anchors[start_of_day.date().isoformat()] = start_of_day
+        needed_anchors[end_of_day.date().isoformat()] = end_of_day
+
+    # 2. Check Cache
+    missing_date_keys = [k for k in needed_anchors if k not in cache]
+
+    # 3. Fetch missing anchors
+    if missing_date_keys:
+        print(f"Phase 1: Cache miss. Fetching {len(missing_date_keys)} daily anchors...")
+
+        def _fetch_anchor(chunk_keys):
+            local_res = {}
+            for date_key in chunk_keys:
+                # We need the full timestamp for the API query
+                ts_obj = needed_anchors[date_key]
+                ts_iso = ts_obj.isoformat()
+
+                query = f"""
+                query {{
+                    blocks(last: 1, orderBy: ID_ASC, filter: {{timestamp: {{lessThanOrEqualTo: "{ts_iso}"}}}}) {{
+                        nodes {{ id }}
+                    }}
+                }}
+                """
+                resp = query_indexer(url=URL_UNIFIED_PROD, query=query)
+                try:
+                    node = resp['data']['blocks']['nodes'][0]
+                    # Map the simple date key to the block number
+                    local_res[date_key] = int(node['id'].split('-')[0])
+                except (KeyError, IndexError, TypeError):
+                    print(f"Warning: Could not fetch block for {date_key}")
+            return local_res
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = [executor.submit(_fetch_anchor, chunk) for chunk in chunks(missing_date_keys, 5)]
+            for future in concurrent.futures.as_completed(futures):
+                cache.update(future.result())
+
+        save_block_cache(cache)
+        print(f"Cache updated and saved to {BLOCK_CACHE_FILE}")
+    else:
+        print("Phase 1: All dates found in cache.")
+
+    # 4. Resolve specific timestamps using Interpolation
+    results = {}
+    for ts in timestamps:
+        start_of_day = ts.replace(hour=0, minute=0, second=0, microsecond=0)
+        end_of_day = start_of_day + datetime.timedelta(days=1)
+
+        start_key = start_of_day.date().isoformat()
+        end_key = end_of_day.date().isoformat()
+
+        try:
+            # Retrieve Block Numbers from Cache using simple keys
+            block_start = cache[start_key]
+            block_end = cache[end_key]
+
+            # MATH: Simplified Interpolation
+            day_duration_sec = (end_of_day - start_of_day).total_seconds()
+            day_block_diff = block_end - block_start
+
+            if day_duration_sec <= 0:
+                results[ts] = block_start
+            else:
+                blocks_per_sec = day_block_diff / day_duration_sec
+                target_offset_sec = (ts - start_of_day).total_seconds()
+                results[ts] = int(block_start + (target_offset_sec * blocks_per_sec))
+
+        except KeyError:
+            results[ts] = None
+
+    return results
+
+    # 4. Resolve specific timestamps using Interpolation
+    results = {}
+    for ts in timestamps:
+        start_of_day = ts.replace(hour=0, minute=0, second=0, microsecond=0)
+        end_of_day = start_of_day + datetime.timedelta(days=1)
+
+        try:
+            # Retrieve Block Numbers from Cache
+            block_start = cache[start_of_day.isoformat()]
+            block_end = cache[end_of_day.isoformat()]
+
+            # MATH: Simplified Interpolation
+            # We assume the time difference is exactly the difference between our anchor timestamps
+            # (usually 86400 seconds)
+            day_duration_sec = (end_of_day - start_of_day).total_seconds()
+            day_block_diff = block_end - block_start
+
+            if day_duration_sec <= 0:
+                results[ts] = block_start
+            else:
+                blocks_per_sec = day_block_diff / day_duration_sec
+                # How far into the day is our target?
+                target_offset_sec = (ts - start_of_day).total_seconds()
+                results[ts] = int(block_start + (target_offset_sec * blocks_per_sec))
+
+        except KeyError:
+            # If fetch failed for an anchor, we can't interpolate
+            results[ts] = None
+
+    return results
 
 
 def get_asset_info_by_ids(asset_ids: list = None) -> dict[str: AssetInfo]:
@@ -540,7 +693,9 @@ def get_current_stableswap_pools(block_number):
     return stableswap_pools
 
 
-def get_omnipool_liquidity(block_number: int = None, assets: dict[str: AssetInfo] = None, max_queries: int = 10):
+def get_omnipool_liquidity(
+        block_number: int = None, assets: dict[str: AssetInfo] = None, max_queries: int = 10
+) -> dict[str: dict]:
     asset_info = assets if assets else get_asset_info_by_ids()
     asset_ids_remaining = [asset.id for asset in assets.values()] if assets else get_current_omnipool_assets()
     if '1' not in asset_info:
@@ -1186,3 +1341,110 @@ def download_acct_trades(asset_id: str, acct: str, path: str, min_block: int = N
 
     with open(f"{path}acct_swaps_{asset_id}_{acct}.json", "w") as f:
         json.dump(trades, f)
+
+
+def get_omnipool_liquidity_at_intervals(
+        asset_ids: str or list,
+        interval: datetime.timedelta,
+        start_time: datetime.datetime,
+        end_time: datetime.datetime = None,
+        max_workers: int = 10
+) -> dict[int: dict[str: dict]]:
+    """
+    Fetches historical liquidity using threaded batched GraphQL queries.
+    """
+    if end_time is None:
+        end_time = datetime.datetime.now()
+    if isinstance(asset_ids, str):
+        asset_ids = [asset_ids]
+
+    asset_info = get_asset_info_by_ids(asset_ids)
+
+    def _fetch_liquidity_batch(chunk):
+        """Worker to fetch liquidity for a batch of (ts, block, asset_id) tuples."""
+        local_results = []
+        query_parts = []
+
+        for i, (ts, block, asset_id) in enumerate(chunk):
+            query_parts.append(f"""
+                q_{i}: omnipoolAssetData(
+                    last: 1, 
+                    filter: {{
+                        assetId: {{equalTo: {asset_id}}}, 
+                        paraBlockHeight: {{equalTo: {block}}}
+                    }}
+                ) {{
+                    nodes {{
+                        assetId
+                        balances
+                        assetState
+                    }}
+                }}
+            """)
+
+        full_query = "query batch_liquidity { " + ",".join(query_parts) + " }"
+
+        response = query_indexer(url=URL_OMNIPOOL_STORAGE, query=full_query)
+
+        for i, (ts, block, asset_id) in enumerate(chunk):
+            asset_obj = asset_info[str(asset_id)]
+            try:
+                node = response['data'][f"q_{i}"]['nodes'][0]
+                hub_decimals = asset_info['1'].decimals if '1' in asset_info else 12
+
+                balance_d = int(node['balances']['d'][0]) if node.get('balances') else 0
+                state_d = node['assetState']['d'] if node.get('assetState') else [0, 0, 0]
+
+                record = {
+                    "liquidity": balance_d / 10 ** asset_obj.decimals,
+                    "LRNA": int(state_d[0]) / 10 ** hub_decimals,
+                    "shares": int(state_d[1]) / 10 ** asset_obj.decimals,
+                    "protocol_shares": int(state_d[2]) / 10 ** asset_obj.decimals,
+                }
+                local_results.append((ts, asset_obj.unique_id, record))
+
+            except (KeyError, IndexError, TypeError):
+                zero_record = {"liquidity": 0, "LRNA": 0, "shares": 0, "protocol_shares": 0}
+                local_results.append((ts, asset_obj.unique_id, zero_record))
+
+        return local_results
+
+    print("Resolving timestamps to block numbers (Threaded)...")
+
+    timestamps = []
+    curr = start_time
+    while curr <= end_time:
+        timestamps.append(curr)
+        curr += interval
+    timestamp_to_block = get_blocks_at_timestamps(timestamps, max_workers=max_workers)
+
+    print("Fetching liquidity snapshots (Threaded)...")
+
+    tasks = []
+    batch_size = 10
+    for ts, block in timestamp_to_block.items():
+        if block is None: continue
+        for asset_id in asset_ids:
+            tasks.append((ts, block, asset_id))
+
+    results_map = {ts: {} for ts in timestamps}
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [
+            executor.submit(_fetch_liquidity_batch, chunk)
+            for chunk in chunks(tasks, batch_size)
+        ]
+
+        for future in concurrent.futures.as_completed(futures):
+            try:
+                batch_results = future.result()
+                for (ts, unique_id, record) in batch_results:
+                    results_map[ts][unique_id] = record
+            except Exception as e:
+                print(f"Error in Phase 2 worker: {e}")
+
+    final_output = {}
+    for ts in sorted(results_map.keys()):
+        final_output[timestamp_to_block[ts]] = results_map[ts]
+
+    return final_output
