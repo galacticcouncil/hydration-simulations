@@ -11,7 +11,7 @@ class Agent:
                  trade_strategy: any = None,
                  unique_id: str = 'agent',
                  nfts: dict[str: any] = None,
-                 enforce_holdings: bool = True,
+                 enforce_holdings: bool = False,
                  immune_to_fees: bool = False
                  ):
         """
