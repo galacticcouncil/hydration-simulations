@@ -1337,7 +1337,7 @@ class OmnipoolState(Exchange):
         delta_qa, delta_r, delta_q, delta_s, delta_b, nft_ids = val[:6]
 
         max_remove = (
-                self.max_withdrawal_per_block * self.shares[tkn_remove] - self.current_block.withdrawals[tkn_remove]
+                self.max_withdrawal_per_block * self.current_block.shares[tkn_remove] - self.current_block.withdrawals[tkn_remove]
         )
         if abs(delta_s) > max_remove:
             return self.fail_transaction(
