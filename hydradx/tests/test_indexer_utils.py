@@ -11,8 +11,10 @@ from hydradx.model.amm.stableswap_amm import StableSwapPoolState
 os.chdir('../..')
 
 from hydradx.model.indexer_utils import get_latest_stableswap_data, get_current_block_height, get_current_omnipool, \
-    get_current_omnipool_assets, get_current_stableswap_pools, get_current_omnipool_router, get_fee_history, \
-    get_executed_trades, get_stableswap_liquidity_events, get_fee_pcts, get_omnipool_asset_data
+    get_current_omnipool_asset_ids, get_stableswap_pools, get_current_omnipool_router, get_fee_history, \
+    get_executed_trades, get_stableswap_liquidity_events, get_fee_pcts, get_omnipool_asset_data, get_omnipool_liquidity, \
+    get_blocks_at_timestamps
+
 
 def test_get_latest_stableswap_data():
     """
@@ -28,8 +30,8 @@ def test_get_latest_stableswap_data():
 
 
 def test_get_current_stableswap_pools():
-    from hydradx.model.indexer_utils import get_current_stableswap_pools
-    pools = get_current_stableswap_pools(block_number=8450000)
+    from hydradx.model.indexer_utils import get_stableswap_pools
+    pools = get_stableswap_pools(block_number=8450000)
     assert len(pools) > 0
 
 
@@ -87,7 +89,7 @@ def test_download_stableswap_exec_prices():
 
 
 def test_get_stableswap_pools():
-    stableswap_pools = get_current_stableswap_pools(8400000)
+    stableswap_pools = get_stableswap_pools(8400000)
     for pool in stableswap_pools.values():
         assert isinstance(pool, StableSwapPoolState)
     price = stableswap_pools['690'].price(
@@ -174,7 +176,7 @@ def test_bucket_values():
 
 
 def test_get_current_omnipool_assets():
-    ids_str = get_current_omnipool_assets()
+    ids_str = get_current_omnipool_asset_ids()
     ids = [int(x) for x in ids_str]
     print(ids)
     assert 0 in ids
@@ -190,3 +192,11 @@ def test_get_current_omnipool_fees():
 
 def test_get_omnipool_asset_data():
     data = get_omnipool_asset_data(min_block_id=8400000, max_block_id=8401000)
+
+
+def test_get_omnipool_trades():
+    from hydradx.model.indexer_utils import get_omnipool_trades
+    current_block = get_current_block_height()
+    data = get_omnipool_trades(min_block=current_block - 10000, max_block=current_block - 9000)
+    pass
+
