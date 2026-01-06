@@ -13,7 +13,7 @@ os.chdir('../..')
 from hydradx.model.indexer_utils import get_latest_stableswap_data, get_current_block_height, get_current_omnipool, \
     get_current_omnipool_asset_ids, get_stableswap_pools, get_current_omnipool_router, get_fee_history, \
     get_executed_trades, get_stableswap_liquidity_events, get_fee_pcts, get_omnipool_asset_data, get_omnipool_liquidity, \
-    get_blocks_at_timestamps
+    get_blocks_at_timestamps, is_decimal
 
 
 def test_get_latest_stableswap_data():
@@ -177,7 +177,7 @@ def test_bucket_values():
 
 def test_get_current_omnipool_assets():
     ids_str = get_current_omnipool_asset_ids()
-    ids = [int(x) for x in ids_str]
+    ids = [int(x) for x in ids_str if is_decimal(x)]
     print(ids)
     assert 0 in ids
 
