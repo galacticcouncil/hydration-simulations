@@ -2517,6 +2517,7 @@ def test_fee_application():
 
 @given(st.integers(min_value=1, max_value=10), st.integers(min_value=1, max_value=10))
 def test_lrna_swap_equivalency(lrna_burn_rate, min_fee_fraction):
+    treasury_agent = Agent()
     initial_state = OmnipoolState(
         tokens={'HDX': {'liquidity': mpf(1000000), 'LRNA': mpf(1000)}, 'USD': {'liquidity': mpf(3000), 'LRNA': mpf(150)}},
         lrna_fee=DynamicFee(
@@ -2528,7 +2529,8 @@ def test_lrna_swap_equivalency(lrna_burn_rate, min_fee_fraction):
             current={'HDX': mpf(1) / 1000 * 7, 'USD': mpf(1) / 400}
         ),
         lrna_fee_burn=mpf(1) / lrna_burn_rate / min_fee_fraction / 2000,
-        slip_factor=1.0
+        slip_factor=1.0,
+        lrna_fee_destination=treasury_agent
     )
 
     agent = Agent(enforce_holdings=False)
@@ -3065,9 +3067,11 @@ def test_calculate_buy_vs_sell():
     sell_quantity = mpf(1000)
     omnipool.swap(Agent(enforce_holdings=False), tkn_sell='USD', tkn_buy='HDX', sell_quantity=sell_quantity)
     outputs = omnipool.calculate_out_given_in(tkn_buy='HDX', tkn_sell='USD', sell_quantity=sell_quantity)
-    buy_quantity, asset_fee_total, lrna_fee_total, slip_fee_total = outputs
+    buy_quantity, delta_qi, delta_qj, asset_fee_total, lrna_fee_total, slip_fee_buy, slip_fee_sell = outputs
+    slip_fee_total = slip_fee_buy + slip_fee_sell
     outputs = omnipool.calculate_in_given_out(tkn_buy='HDX', tkn_sell='USD', buy_quantity=buy_quantity)
-    sell_quantity_2, asset_fee_total_2, lrna_fee_total_2, slip_fee_total_2 = outputs
+    sell_quantity_2, delta_qi, delta_qj, asset_fee_total_2, lrna_fee_total_2, slip_fee_buy, slip_fee_sell = outputs
+    slip_fee_total_2 = slip_fee_sell + slip_fee_buy
     if sell_quantity != pytest.approx(sell_quantity_2, rel=1e-40):
         raise AssertionError('Calculate buy vs sell quantities do not match.')
     if asset_fee_total != pytest.approx(asset_fee_total_2, rel=1e-40):
@@ -3079,6 +3083,7 @@ def test_calculate_buy_vs_sell():
 
 
 def test_lrna_without_mint_or_burn_is_constant():
+    treasury_agent = Agent()
     omnipool = OmnipoolState(
         tokens={
             'HDX': {'liquidity': mpf(10000000), 'LRNA': mpf(10000)},
@@ -3088,7 +3093,8 @@ def test_lrna_without_mint_or_burn_is_constant():
         lrna_fee=0.00025,
         slip_factor=1.0,
         lrna_fee_burn=0.0,
-        lrna_mint_pct=0
+        lrna_mint_pct=0,
+        lrna_fee_destination=treasury_agent
     )
     omnipool.max_lrna_fee = 0.01
     initial_total_lrna = sum(omnipool.lrna.values())
