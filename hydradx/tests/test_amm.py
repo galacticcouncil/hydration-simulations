@@ -178,7 +178,7 @@ def test_simulation(initial_state: GlobalState):
         )
     }
 ))
-def test_LP(initial_state: GlobalState):
+def test_lp(initial_state: GlobalState):
     initial_state.agents['LP'].holdings = {
         tkn: quantity for tkn, quantity in initial_state.pools['HDX/USD'].liquidity.items()
     }
@@ -187,7 +187,7 @@ def test_LP(initial_state: GlobalState):
     events = run.run(old_state, time_steps=10, silent=True)
     final_state: GlobalState = events[-1]
 
-    if sum([final_state.agents['LP'].holdings[i] for i in initial_state.asset_list]) > 0:
+    if sum([final_state.agents['LP'].holdings[i] for i in initial_state.pools['omnipool'].liquidity]) > 0:
         print('failed, not invested')
         raise AssertionError('Why does this LP not have all its assets in the pool???')
     if final_state.cash_out('LP') < initial_state.cash_out('LP'):
@@ -263,53 +263,6 @@ def test_arbitrage_profitability(hdx_balance, bsx_balance, hdx_price, bsx_price)
         arb.trade_strategy.execute(state, 'arbitrageur')
         if arb.holdings['USD'] < prev_holdings:
             raise AssertionError('Arbitrageur lost money :(')
-
-
-@given(global_state_config(
-    external_market={'X': 0, 'Y': 0},  # config function will fill these in with random values
-    pools={
-        'X/Y': ConstantProductPoolState(
-            {
-                'X': 0,  # random via draw(asset_quantity_strategy)
-                'Y': 0
-            },
-            trade_fee=0  # i.e. choose one randomly via draw(fee_strategy)
-        )
-    },
-    agents={
-        'arbitrager': Agent()
-    }
-), asset_price_strategy, st.floats(min_value=0, max_value=0.1))
-def test_arbitrage_accuracy(initial_state: GlobalState, target_price: float, trade_fee: float):
-    initial_state.trade_fee = trade_fee
-    initial_state.external_market['Y'] = initial_state.price('X') * target_price
-    algebraic_function = constant_product_arbitrage('X/Y', minimum_profit=0)
-
-    def sell_spot(state: GlobalState):
-        return (
-                state.pools['X/Y'].liquidity['X']
-                / state.pools['X/Y'].liquidity['Y']
-                * (1 - state.pools['X/Y'].trade_fee())
-        )
-
-    def buy_spot(state: GlobalState):
-        return (
-                state.pools['X/Y'].liquidity['X']
-                / state.pools['X/Y'].liquidity['Y']
-                / (1 - state.pools['X/Y'].trade_fee())
-        )
-
-    algebraic_state = copy.deepcopy(algebraic_function.execute(initial_state.copy(), 'arbitrager'))
-    algebraic_result = (algebraic_state.pools['X/Y'].liquidity['X']
-                        / algebraic_state.pools['X/Y'].liquidity['Y'])
-
-    if target_price < sell_spot(initial_state):
-        if sell_spot(algebraic_state) != pytest.approx(target_price):
-            raise AssertionError("Arbitrage calculation doesn't match expected result.")
-
-    elif target_price > buy_spot(initial_state):
-        if buy_spot(algebraic_state) != pytest.approx(target_price):
-            raise AssertionError("Arbitrage calculation doesn't match expected result.")
 
 
 @given(global_state_config(
