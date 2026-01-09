@@ -365,7 +365,7 @@ def test_arb_loop_known_profitable(ratios, buyback_speed, max_buy_price_coef, su
         pools = [usdt_pool.copy(), susds_pool.copy()]
         hsm = StabilityModule(liquidity, buyback_speed, pools, sell_fee, max_buy_price_coef, buy_fee)
 
-        agent = Agent()
+        agent = Agent(enforce_holdings=True)
         hsm.arb(agent, tkn)
         if not agent.validate_holdings(tkn):
             raise ValueError("Agent should have positive USDT holdings after arb")
@@ -393,7 +393,7 @@ def test_arb_loop_known(ratios, buyback_speed, max_buy_price_coef, susds_price, 
         hsm = StabilityModule(liquidity, buyback_speed, pools, sell_fee, max_buy_price_coef, buy_fee)
 
         # signature of arb function is arb(self, agent: Agent, tkn: str) -> None:
-        agent = Agent()
+        agent = Agent(enforce_holdings=True)
         hsm.arb(agent, tkn)
         # agent should have no HOLLAR after arb
         if agent.validate_holdings('HOLLAR'):
