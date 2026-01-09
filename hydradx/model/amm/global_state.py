@@ -246,16 +246,16 @@ class GlobalState:
         if tkn_buy not in agent.holdings:
             agent.holdings[tkn_buy] = 0
 
-        if agent.holdings[tkn_sell] - sell_quantity < 0:
+        if agent.get_holdings(tkn_sell) - sell_quantity < 0:
             # insufficient funds, reduce quantity to match
-            sell_quantity = agent.holdings[tkn_sell]
-        elif agent.holdings[tkn_buy] + buy_quantity < 0:
+            sell_quantity = agent.get_holdings(tkn_sell)
+        elif agent.get_holdings(tkn_buy) + buy_quantity < 0:
             # also insufficient funds
-            buy_quantity = -agent.holdings[tkn_buy]
+            buy_quantity = -agent.get_holdings(tkn_buy)
 
         # there could probably be a fee or something here, but for now you can sell infinite quantities for free
-        agent.holdings[tkn_buy] += buy_quantity
-        agent.holdings[tkn_sell] -= sell_quantity
+        agent.add(tkn_buy, buy_quantity)
+        agent.remove(tkn_sell, sell_quantity)
 
         return self
 
