@@ -667,7 +667,7 @@ class OmnipoolState(Exchange):
         slip_rate_sell = min(self.compute_slip_fee(tkn_sell, -x), max_fee - lrna_fee)
         slip_fee_sell += x * slip_rate_sell
 
-        delta_qi = -x  # sell pool LRNA decreases by x
+        delta_qi = -x + slip_fee_sell + lrna_fee_total
         return sell_quantity, delta_qi, delta_qj, asset_fee_total, lrna_fee_total, slip_fee_buy, slip_fee_sell
 
     def calculate_sell_from_buy(self, tkn_buy, tkn_sell, buy_quantity):
@@ -713,7 +713,8 @@ class OmnipoolState(Exchange):
 
             lrna_fee_total += -delta_qi * lrna_fee_rate
             slip_fee_sell += -delta_qi * slip_rate_sell
-            delta_qj = -delta_qi * (1.0 - total_rate_sell)
+            delta_qi *= (1.0 - total_rate_sell)
+            delta_qj = -delta_qi
         else:
             delta_qi = 0.0
             delta_qj = sell_quantity
@@ -850,8 +851,23 @@ class OmnipoolState(Exchange):
         lrna_fee_burn = lrna_fee_total * self.lrna_fee_burn
         lrna_fee_deposit = lrna_fee_total - lrna_fee_burn
 
+        if tkn_buy != "LRNA":
+            # minting
+            D_net = delta_qj - slip_fee_buy
+            asset_fee_rate = self.asset_fee(tkn_buy)
+
+            if self.lrna[tkn_buy] <= 0:
+                return self.fail_transaction('Invalid LRNA balance in pool')
+            delta_qm = (
+                    (self.lrna[tkn_buy] + D_net) * D_net *
+                    asset_fee_rate / self.lrna[tkn_buy] *
+                    self.lrna_mint_pct
+            )
+            delta_qj += delta_qm
+
         if self.lrna_fee_destination:
             self.lrna_fee_destination.add("LRNA", lrna_fee_deposit)
+            delta_qj -= lrna_fee_deposit
             # self.lrna_fee_destination.add("LRNA", slip_fee_total * (1 - self.lrna_fee_burn))
 
         # ---------- per-block trade limits ----------
