@@ -16,3 +16,10 @@
 *.env
 /hydradx/apps/fees/data
 /hydradx/apps/money_market/archive
+/hydradx/apps/fees/acct_swaps_5_0x7279fcf9694718e1234d102825dccaf332f0ea36edf1ca7c0358c4b68260d24b.json
+/hydradx/apps/omnipool/cached data/all_trades.txt
+/hydradx/other tests/cached data/all_trades.txt
+/hydradx/apps/omnipool/cached data/lrna_sells.txt
+/hydradx/other tests/cached data/lrna_sells.txt
+/hydradx/tests/money_market_save_test.json
+**/cached\ data/**
