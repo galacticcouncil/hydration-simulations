@@ -814,7 +814,8 @@ def test_lrna_swap_sell_with_lrna_mint(
         tvl_cap=float('inf'),
         asset_fee=asset_fee,
         lrna_fee=lrna_fee,
-        lrna_mint_pct=1.0
+        lrna_mint_pct=1.0,
+        lrna_fee_burn=0
     )
 
     old_agent = Agent(
@@ -827,25 +828,25 @@ def test_lrna_swap_sell_with_lrna_mint(
 
     feeless_state = initial_state.copy()
     feeless_state.asset_fee = 0
-    for asset in feeless_state.asset_list:
-        feeless_state.last_fee[asset] = 0
+    feeless_state.lrna_fee = 0
+    feeless_state.slip_factor = 0
 
     # Test with trader buying asset i
     swap_state, swap_agent = oamm.simulate_swap(
         initial_state, old_agent,
         tkn_buy=i,
         tkn_sell='LRNA',
-        sell_quantity=delta_qa
+        sell_quantity=-delta_qa
     )
     feeless_swap_state, feeless_swap_agent = oamm.simulate_swap(
         feeless_state, old_agent,
         tkn_buy=i,
         tkn_sell='LRNA',
-        sell_quantity=delta_qa
+        sell_quantity=-delta_qa
     )
     feeless_spot_price = feeless_swap_state.price(i)
     spot_price = swap_state.price(i)
-    if feeless_swap_state.fail == '' and swap_state.fail == '':
+    if not(feeless_swap_state.fail or swap_state.fail):
         if feeless_spot_price != pytest.approx(spot_price, rel=1e-16):
             raise AssertionError('Spot price is wrong.')
 
