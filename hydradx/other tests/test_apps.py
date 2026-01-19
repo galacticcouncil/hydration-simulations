@@ -208,3 +208,8 @@ def test_slip_fees_chart():
     omnipool.max_asset_fee = 1
     omnipool.slip_factor = 1.0
     slip_fees_chart.plot_trade_sizes("HDX", "DOT", router, omnipool)
+
+
+def test_hdx_h2o():
+    from hydradx.apps.omnipool import hdx_h2o
+
