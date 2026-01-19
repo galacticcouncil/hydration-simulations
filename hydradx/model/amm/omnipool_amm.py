@@ -873,7 +873,7 @@ class OmnipoolState(Exchange):
         # ---------- per-block trade limits ----------
         if (
                 tkn_buy in self.liquidity and
-                self.current_block.volume_in[tkn_buy] + self.current_block.volume_out[tkn_buy] - buy_quantity
+                self.current_block.volume_in[tkn_buy] - self.current_block.volume_out[tkn_buy] + buy_quantity
                 > self.trade_limit_per_block * self.current_block.liquidity[tkn_buy]
         ):
             return self.fail_transaction(
