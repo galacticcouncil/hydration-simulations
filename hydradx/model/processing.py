@@ -6,6 +6,7 @@ import os
 import time
 from csv import reader
 from zipfile import ZipFile
+from pathlib import Path
 
 import requests
 from dotenv import load_dotenv
@@ -462,14 +463,19 @@ def get_current_omnipool_router(rpc='wss://rpc.hydradx.cloud') -> OmnipoolRouter
     return router
 
 
-def save_omnipool(omnipool_router: OmnipoolRouter, path: str = './archive'):
-    ts = time.time()
+def save_state(omnipool_router: OmnipoolRouter, path: str = './archive', filename: str = ''):
+    filepath = Path(path)
+
+    if not filename:
+        ts = time.time()
+        filename = f'omnipool_savefile_{ts}.json'
+
     omnipool = omnipool_router.exchanges.get('omnipool', None)
     stableswap_pools = []
     for exchange_id in omnipool_router.exchanges:
         if isinstance(omnipool_router.exchanges[exchange_id], StableSwapPoolState):
             stableswap_pools.append(omnipool_router.exchanges[exchange_id])
-    with open(os.path.join(path, f'omnipool_savefile_{ts}.json'), 'w+') as output_file:
+    with open(filepath / filename, 'w+') as output_file:
         json.dump(
             {
                 'liquidity': omnipool.liquidity,
@@ -493,7 +499,10 @@ def save_omnipool(omnipool_router: OmnipoolRouter, path: str = './archive'):
         )
 
 
-def load_omnipool(path: str = './archive', filename: str = '') -> OmnipoolRouter:
+def load_state(path: str = './archive', filename: str = '') -> OmnipoolRouter:
+    filepath = Path(path)
+    if filepath.is_file():
+        filename = filepath.name
     if filename:
         file_ls = [filename]
     else:
