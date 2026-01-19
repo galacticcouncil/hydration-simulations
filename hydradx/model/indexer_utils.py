@@ -82,13 +82,13 @@ def is_decimal(s):
     except ValueError:
         return False
 
-def get_blocks_at_timestamps(timestamps, max_workers=10):
+def get_blocks_at_timestamps(timestamps: list[datetime.datetime]) -> dict[datetime.datetime, int]:
     """
     Returns a dict {timestamp: block_number}.
     Uses a persistent daily cache: {"YYYY-MM-DD": block_int}
     """
     cache = load_block_cache()
-
+    max_workers: int = 10
     # 1. Identify necessary 'Anchors' (Midnights)
     # We store the datetime objects to help with querying, but use date strings for keys.
     needed_anchors = {}  # { "YYYY-MM-DD": datetime_obj }
@@ -1478,3 +1478,28 @@ def get_omnipool_liquidity_at_intervals(
         final_output[timestamp_to_block[ts]] = results_map[ts]
 
     return final_output
+
+
+def get_dates_of_blocks(block_numbers: list[int]) -> dict[int: datetime.datetime]:
+    """Fetches the dates for a list of block numbers."""
+    block_to_date = {}
+    # check omnipool_block_cache.json
+    with open(Path(__file__).parent / 'cache' / 'omnipool_block_cache.json', 'r') as f:
+        block_cache = json.load(f)
+        dates = list(block_cache.keys())
+        blocks = list(block_cache.values())
+        for block in block_numbers:
+            # find the next lowest block in cache and return that date
+            for i in range(len(blocks)):
+                if int(block) <= blocks[i] and block not in block_to_date:
+                    date_str = dates[i - 1]
+                    block_to_date[block] = date_str
+                    break
+
+    return block_to_date
+
+
+def get_date_of_block(block_number: int) -> datetime.datetime:
+    """Fetches the date for a single block number."""
+    block_to_date = get_dates_of_blocks([block_number])
+    return block_to_date[block_number]
