@@ -1306,13 +1306,8 @@ class OmnipoolState(Exchange):
         self.lrna[tkn_remove] += delta_q
 
         # distribute tokens to agent
-        if delta_qa > 0:
-            if 'LRNA' not in agent.holdings:
-                agent.holdings['LRNA'] = 0
-            agent.holdings['LRNA'] += delta_qa
-        if tkn_remove not in agent.holdings:
-            agent.holdings[tkn_remove] = 0
-        agent.holdings[tkn_remove] -= delta_r
+        agent.add('LRNA', delta_qa)
+        agent.add(tkn_remove, -delta_r)
 
         # remove lp position(s)
         if nft_id is None:
