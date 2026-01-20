@@ -595,7 +595,7 @@ class OmnipoolState(Exchange):
 
         if tkn_buy == "LRNA":
             D = buy_quantity
-            delta_qj = -D
+            delta_qj = 0
         else:
             A = self.liquidity[tkn_buy]
             Qb = self.lrna[tkn_buy]
