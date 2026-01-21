@@ -579,7 +579,8 @@ def test_remove_liquidity_no_fee_different_price(initial_state: oamm.OmnipoolSta
         lrna_fee=0.005,
         asset_fee=0.0025,
         lrna_mint_pct=1.0,
-        lrna_fee_burn=0.5
+        lrna_fee_burn=0.5,
+        lrna_fee_destination=Agent()
     )
     trade_size_ratio = 0.125
     i = initial_state.asset_list[2]
