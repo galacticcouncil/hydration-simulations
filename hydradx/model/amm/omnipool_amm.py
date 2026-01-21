@@ -867,6 +867,7 @@ class OmnipoolState(Exchange):
 
         if self.lrna_fee_destination:
             self.lrna_fee_destination.add("LRNA", lrna_fee_deposit)
+            delta_qj -= lrna_fee_deposit
         else:
             delta_qi += lrna_fee_deposit
             # self.lrna_fee_destination.add("LRNA", slip_fee_total * (1 - self.lrna_fee_burn))
