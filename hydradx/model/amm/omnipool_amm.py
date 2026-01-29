@@ -67,7 +67,7 @@ class OmnipoolState(Exchange):
                  lrna_mint_pct: float = 1.0,
                  unique_id: str = 'omnipool',
                  lrna_fee_burn: float = 0.5,
-                 lrna_fee_destination: Agent = None,
+                 lrna_fee_destination: Agent = Agent(),
                  dynamic_fee_precision: int = 20,
                  slip_factor: float = None
                  ):
@@ -169,8 +169,7 @@ class OmnipoolState(Exchange):
         self.lrna_fee_burn = lrna_fee_burn
         if lrna_fee_burn > 1 or lrna_fee_burn < 0:
             raise ValueError('lrna_fee_burn must be >= 0 and <= 1')
-        # if lrna_fee_destination is None:
-        #     lrna_fee_destination = Agent(holdings={'LRNA': 0})
+
         self.lrna_fee_destination = lrna_fee_destination
         self.dynamic_fee_precision = dynamic_fee_precision
 
@@ -494,17 +493,24 @@ class OmnipoolState(Exchange):
         return (
             f'Omnipool: {self.unique_id}\n'
             f'********************************\n'
-            f'tvl cap: {self.tvl_cap}\n'
-            f'lrna fee:\n\n'
+            f'tvl cap: {self.tvl_cap}\n\n'
+            f'lrna fee:\n'
             f'{newline.join([f"    {tkn}: {self.last_lrna_fee[tkn]}" for tkn in self.liquidity])}\n\n'
-            f'asset fee:\n\n'
+            f'asset fee:\n'
             f'{newline.join([f"    {tkn}: {self.last_fee[tkn]}" for tkn in self.liquidity])}\n\n'
-            f'asset pools: (\n\n'
+            f'asset pools: \n'
+            '    {\n'
         ) + '\n'.join(
             [(
-                    f'    *{tkn}*\n'
-                    f'    asset quantity: {liquidity[tkn]}\n'
-                    f'    lrna quantity: {lrna[tkn]}\n'
+        f"""        '{tkn}': {{
+            'liquidity': {self.liquidity[tkn]},
+            'LRNA': {self.lrna[tkn]}, 
+            'shares': {self.shares[tkn]},
+        }}"""
+                    ) for tkn in self.liquidity]
+        )+ '\n    }\n    other stats:\n' + '\n'.join(
+            [(
+                    f'  {tkn} (\n' +
                     f'    USD price: {usd_prices[tkn]}\n' +
                     # f'    tvl: ${lrna[tkn] * liquidity[self.stablecoin] / lrna[self.stablecoin]}\n'
                     f'    weight: {lrna[tkn]}/{lrna_total} ({lrna[tkn] / lrna_total})\n'
@@ -616,7 +622,7 @@ class OmnipoolState(Exchange):
                 slip_rate_buy = min(self.compute_slip_fee(tkn_buy, D), max_fee)
                 slip_fee_buy += D * slip_rate_buy
 
-            delta_qj = D
+            delta_qj = D - slip_fee_buy
 
         if tkn_sell == "LRNA":
             return D, 0.0, delta_qj, asset_fee_total, 0.0, slip_fee_buy, 0.0
@@ -667,7 +673,7 @@ class OmnipoolState(Exchange):
         slip_rate_sell = min(self.compute_slip_fee(tkn_sell, -x), max_fee - lrna_fee)
         slip_fee_sell += x * slip_rate_sell
 
-        delta_qi = -x + slip_fee_sell + lrna_fee_total
+        delta_qi = -x  # + slip_fee_sell + lrna_fee_total
         return sell_quantity, delta_qi, delta_qj, asset_fee_total, lrna_fee_total, slip_fee_buy, slip_fee_sell
 
     def calculate_sell_from_buy(self, tkn_buy, tkn_sell, buy_quantity):
@@ -713,8 +719,8 @@ class OmnipoolState(Exchange):
 
             lrna_fee_total += -delta_qi * lrna_fee_rate
             slip_fee_sell += -delta_qi * slip_rate_sell
-            delta_qi *= (1.0 - total_rate_sell)
-            delta_qj = -delta_qi
+            # delta_qi = (1.0 - total_rate_sell)
+            delta_qj = -delta_qi * (1.0 - total_rate_sell)
         else:
             delta_qi = 0.0
             delta_qj = sell_quantity
@@ -739,8 +745,8 @@ class OmnipoolState(Exchange):
             return math.inf, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
 
         slip_fee_buy = delta_qj * slip_rate_buy
-        delta_qj_net = delta_qj * (1.0 - slip_rate_buy)
-        delta_ra = Lb * delta_qj_net / (Hb + delta_qj_net)
+        delta_qj *= 1.0 - slip_rate_buy
+        delta_ra = Lb * delta_qj / (Hb + delta_qj)
 
         asset_fee_rate = self.compute_dynamic_fee(self._asset_fee, tkn_buy)
         asset_fee_total = delta_ra * asset_fee_rate
@@ -848,8 +854,9 @@ class OmnipoolState(Exchange):
             return self.fail_transaction(f"Agent doesn't have enough {tkn_sell}")
 
         slip_fee_total = slip_fee_buy + slip_fee_sell
-        lrna_fee_burn = lrna_fee_total * self.lrna_fee_burn
-        lrna_fee_deposit = lrna_fee_total - lrna_fee_burn
+        lrna_fee_burn = (lrna_fee_total + slip_fee_total) * self.lrna_fee_burn
+        lrna_fee_deposit = lrna_fee_total + slip_fee_total - lrna_fee_burn
+        # delta_qi -= lrna_fee_burn
 
         if tkn_buy != "LRNA":
             # minting
@@ -867,10 +874,10 @@ class OmnipoolState(Exchange):
 
         if self.lrna_fee_destination:
             self.lrna_fee_destination.add("LRNA", lrna_fee_deposit)
-            delta_qj -= lrna_fee_deposit
+            # delta_qi -= lrna_fee_deposit
         else:
+            # deposit to sell pool
             delta_qi += lrna_fee_deposit
-            # self.lrna_fee_destination.add("LRNA", slip_fee_total * (1 - self.lrna_fee_burn))
 
         # ---------- per-block trade limits ----------
         if (
