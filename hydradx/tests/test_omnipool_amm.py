@@ -571,18 +571,8 @@ def test_remove_liquidity_dynamic_fee(price_diff: float, asset_dict: dict):
 @given(omnipool_config(token_count=3, withdrawal_fee=False),
        st.floats(min_value=0.001, max_value=0.2))
 def test_remove_liquidity_no_fee_different_price(initial_state: oamm.OmnipoolState, trade_size_ratio: float):
-    initial_state = OmnipoolState(
-        tokens={'HDX': {'liquidity': mpf(10000000), 'LRNA': mpf(1000000)},
-                'USD': {'liquidity': mpf(100), 'LRNA': mpf(100)},
-                'DOT': {'liquidity': mpf(100000), 'LRNA': mpf(1000000)}},
-        withdrawal_fee=False,
-        lrna_fee=0.005,
-        asset_fee=0.0025,
-        lrna_mint_pct=1.0,
-        lrna_fee_burn=0.5,
-        lrna_fee_destination=Agent()
-    )
-    trade_size_ratio = 0.125
+    initial_state.lrna_fee_destination = Agent(holdings={'LRNA': 0, 'HDX': 0, 'USD': 0, 'DOT': 0})
+
     i = initial_state.asset_list[2]
     initial_agent = Agent(
         holdings={token: 1000 for token in initial_state.asset_list + ['LRNA']},
@@ -1055,7 +1045,6 @@ def test_sell_with_partial_lrna_mint(
 
 @given(omnipool_reasonable_config(token_count=3, lrna_fee=0.0005, asset_fee=0.0025))
 def test_lrna_buy_nonzero_fee(initial_state: oamm.OmnipoolState):
-    initial_state.lrna_fee_burn = 0
     old_state = initial_state
     old_agent = Agent(
         holdings={token: 1000000 for token in initial_state.asset_list + ['LRNA']}
@@ -3082,7 +3071,8 @@ def test_trade_to_price():
             'USD': {'liquidity': mpf(1000000), 'LRNA': mpf(1000000)}
         },
         asset_fee=0.0025,
-        lrna_fee=0.0005
+        lrna_fee=0.0005,
+        lrna_fee_destination=Agent()
     )
     agent = Agent(enforce_holdings=False)
 
@@ -3150,7 +3140,7 @@ def test_calculate_buy_vs_sell():
         },
         asset_fee=mpf(1) / 400,
         lrna_fee=mpf(1) / 2000,
-        slip_factor=1.0
+        slip_factor=1.0,
     )
     omnipool.max_lrna_fee = 0.01  # set LRNA fee cap for this test
     sell_quantity = mpf(1000)
@@ -3159,7 +3149,7 @@ def test_calculate_buy_vs_sell():
     buy_quantity, delta_qi, delta_qj, asset_fee_total, lrna_fee_total, slip_fee_buy, slip_fee_sell = outputs
     slip_fee_total = slip_fee_buy + slip_fee_sell
     outputs = omnipool.calculate_in_given_out(tkn_buy='HDX', tkn_sell='USD', buy_quantity=buy_quantity)
-    sell_quantity_2, delta_qi, delta_qj, asset_fee_total_2, lrna_fee_total_2, slip_fee_buy, slip_fee_sell = outputs
+    sell_quantity_2, delta_qi_2, delta_qj_2, asset_fee_total_2, lrna_fee_total_2, slip_fee_buy, slip_fee_sell = outputs
     slip_fee_total_2 = slip_fee_sell + slip_fee_buy
     if sell_quantity != pytest.approx(sell_quantity_2, rel=1e-40):
         raise AssertionError('Calculate buy vs sell quantities do not match.')
@@ -3169,6 +3159,11 @@ def test_calculate_buy_vs_sell():
         raise AssertionError('Calculate buy vs sell LRNA fees do not match.')
     if slip_fee_total != pytest.approx(slip_fee_total_2, rel=1e-40):
         raise AssertionError('Calculate buy vs sell slip fees do not match.')
+    if delta_qj != pytest.approx(delta_qj_2, rel=1e-40):
+        raise AssertionError('Calculate buy vs sell delta_qj do not match.')
+    if delta_qi != pytest.approx(delta_qi_2, rel=1e-40):
+        raise AssertionError('Calculate buy vs sell delta_qi do not match.')
+
 
 
 def test_lrna_without_mint_or_burn_is_constant():
