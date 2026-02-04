@@ -5,17 +5,15 @@ import pytest
 from hypothesis import given, strategies as st, assume, settings, reproduce_failure
 from mpmath import mp, mpf
 import os
-
 os.chdir('../..')
 
-from hydradx.model import run, processing
+from hydradx.model import run
 from hydradx.model.amm import omnipool_amm as oamm
 from hydradx.model.amm.agents import Agent
 from hydradx.model.amm.global_state import GlobalState
 from hydradx.model.amm.omnipool_amm import DynamicFee, OmnipoolState, OmnipoolLiquidityPosition
 from hydradx.model.amm.trade_strategies import constant_swaps, omnipool_arbitrage
 from hydradx.tests.strategies_omnipool import omnipool_reasonable_config, omnipool_config, assets_config
-import hydradx.model.production_settings as production_settings
 
 mp.dps = 50
 
@@ -27,47 +25,8 @@ asset_quantity_bounded_strategy = st.floats(min_value=1000000, max_value=1000000
 fee_strategy = st.floats(min_value=0.0001, max_value=0.1, allow_nan=False, allow_infinity=False)
 
 
-@given(omnipool_config(asset_fee=0, lrna_fee=0, token_count=3), asset_quantity_strategy)
-def test_swap_lrna_delta_Qi_respects_invariant(d: oamm.OmnipoolState, delta_ri: float):
-    i = d.asset_list[-1]
-    assume(i in d.asset_list)
-    assume(d.liquidity[i] > delta_ri > -d.liquidity[i])
-    d2 = copy.deepcopy(d)
-    delta_Qi = oamm.swap_lrna_delta_Qi(d, delta_ri, i)
-    d2.liquidity[i] += delta_ri
-    d2.lrna[i] += delta_Qi
-
-    # Test basics
-    for j in d2.liquidity:
-        assert d2.liquidity[j] > 0
-        assert d2.lrna[j] > 0
-    assert not (delta_ri > 0 and delta_Qi > 0)
-    assert not (delta_ri < 0 and delta_Qi < 0)
-
-    # Test that the pool invariant is respected
-    assert oamm.asset_invariant(d2, i) == pytest.approx(oamm.asset_invariant(d, i))
-
-
-@given(omnipool_config(asset_fee=0, lrna_fee=0, token_count=3), asset_quantity_strategy)
-def test_swap_lrna_delta_Ri_respects_invariant(d: oamm.OmnipoolState, delta_qi: float):
-    i = d.asset_list[-1]
-    assume(i in d.asset_list)
-    assume(d.lrna[i] > delta_qi > -d.lrna[i])
-    d2 = copy.deepcopy(d)
-    delta_Ri = oamm.swap_lrna_delta_Ri(d, delta_qi, i)
-    d2.lrna[i] += delta_qi
-    d2.liquidity[i] += delta_Ri
-
-    # Test basics
-    for j in d.liquidity:
-        assert d2.liquidity[j] > 0
-        assert d2.lrna[j] > 0
-    assert not (delta_Ri > 0 and delta_qi > 0)
-    assert not (delta_Ri < 0 and delta_qi < 0)
-
-    # Test that the pool invariant is respected
-    assert oamm.asset_invariant(d2, i) == pytest.approx(oamm.asset_invariant(d, i))
-
+def asset_invariant(state: oamm.OmnipoolState, tkn: str):
+    return state.liquidity[tkn] * state.lrna[tkn]
 
 @given(omnipool_config())
 def test_sell_accuracy(initial_state):
@@ -86,14 +45,6 @@ def test_sell_accuracy(initial_state):
     asset_sold = initial_agent.holdings[tkn_sell] - swap_agent.holdings[tkn_sell]
     if asset_sold != pytest.approx(sell_quantity, rel=1e40):
         raise AssertionError('Asset sold is wrong.')
-
-
-@given(omnipool_config(asset_fee=0, lrna_fee=0))
-def test_weights(initial_state: oamm.OmnipoolState):
-    old_state = initial_state
-    for i in old_state.liquidity:
-        assert oamm.weight_i(old_state, i) >= 0
-    assert sum([oamm.weight_i(old_state, i) for i in old_state.liquidity]) == pytest.approx(1.0)
 
 
 @given(omnipool_config())
@@ -694,12 +645,13 @@ def test_swap_lrna(delta_qa: float, buy_index: int):
         tkn_buy=i,
         tkn_sell='LRNA'
     )
-    if oamm.asset_invariant(feeless_swap_state, i) != pytest.approx(oamm.asset_invariant(old_state, i)):
+
+    if asset_invariant(feeless_swap_state, i) != pytest.approx(asset_invariant(old_state, i)):
         raise AssertionError('Invariant not respected in feeless trade.')
     for j in old_state.liquidity:
         if min(new_state.liquidity[j] - feeless_swap_state.liquidity[j], 0) != pytest.approx(0):
             raise AssertionError('Liquidity decreased.')
-    if min(oamm.asset_invariant(new_state, i) / oamm.asset_invariant(old_state, i), 1) != pytest.approx(1):
+    if min(asset_invariant(new_state, i) / asset_invariant(old_state, i), 1) != pytest.approx(1):
         raise AssertionError('Invariant decreased.')
 
     delta_qi = new_state.lrna[i] - old_state.lrna[i]
@@ -1111,7 +1063,7 @@ def test_swap_assets(initial_state: oamm.OmnipoolState, i):
         if min(new_state.liquidity[j] - asset_fee_only_state.liquidity[j], 0) != pytest.approx(0):
             raise AssertionError("asset in pool {j} is lesser when LRNA fee is added vs only asset fee")
         # invariant does not decrease
-        if min(oamm.asset_invariant(new_state, j) / oamm.asset_invariant(old_state, j), 1) != pytest.approx(1):
+        if min(asset_invariant(new_state, j) / asset_invariant(old_state, j), 1) != pytest.approx(1):
             raise AssertionError("invariant ratio less than zero")
         # total quantity of R_i remains unchanged
         if (old_state.liquidity[j] + old_agent.holdings[j]
@@ -2637,6 +2589,7 @@ def test_lrna_split_sell_calculation():
         asset_fee=mpf(1) / 400,  # 0.0025
         slip_factor=mpf(1.0)
     )
+
     output_1 = list(omnipool.calculate_out_given_in(tkn_buy="LRNA", tkn_sell="HDX", sell_quantity=1000))
     outputs = [
         output_1,
