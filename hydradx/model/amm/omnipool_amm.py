@@ -398,6 +398,8 @@ class OmnipoolState(Exchange):
             self.current_block.volume_in[tkn] = 0
             self.current_block.volume_out[tkn] = 0
             self.current_block.lrna[tkn] = self.lrna[tkn]
+            self.current_block.lrna_out[tkn] = 0
+            self.current_block.lrna_in[tkn] = 0
         for oracle in self.oracles.values() if self.oracles else []:
             oracle.liquidity[tkn] = self.liquidity[tkn]
             oracle.price[tkn] = self.lrna[tkn] / self.liquidity[tkn]
@@ -677,10 +679,7 @@ class OmnipoolState(Exchange):
         return sell_quantity, delta_qi, delta_qj, asset_fee_total, lrna_fee_total, slip_fee_buy, slip_fee_sell
 
     def calculate_sell_from_buy(self, tkn_buy, tkn_sell, buy_quantity):
-        if tkn_buy == "LRNA":
-            return self.calculate_in_given_out(tkn_buy, tkn_sell, buy_quantity)[0]
-        else:
-            return self.calculate_in_given_out(tkn_buy, tkn_sell, buy_quantity)[0]
+        return self.calculate_in_given_out(tkn_buy, tkn_sell, buy_quantity)[0]
 
     def calculate_out_given_in(
             self,
@@ -727,7 +726,7 @@ class OmnipoolState(Exchange):
 
         if tkn_buy == "LRNA":
 
-            return delta_qj, delta_qi, 0.0, 0.0, lrna_fee_total, slip_fee_buy, slip_fee_sell
+            return delta_qj, 0, delta_qj, 0.0, lrna_fee_total, slip_fee_buy, slip_fee_sell
 
         if delta_qj <= 0.0:
             return 0.0, 0.0, 0.0, 0.0, lrna_fee_total, 0, slip_fee_sell
@@ -755,10 +754,7 @@ class OmnipoolState(Exchange):
         return delta_ra, delta_qi, delta_qj, asset_fee_total, lrna_fee_total, slip_fee_buy, slip_fee_sell
 
     def calculate_buy_from_sell(self, tkn_buy, tkn_sell, sell_quantity):
-        if tkn_buy == "LRNA":
-            return -self.calculate_out_given_in(tkn_buy, tkn_sell, sell_quantity)[1]
-        else:
-            return self.calculate_out_given_in(tkn_buy, tkn_sell, sell_quantity)[0]
+        return self.calculate_out_given_in(tkn_buy, tkn_sell, sell_quantity)[0]
 
     def buy_spot(self, tkn_buy: str, tkn_sell: str, fee: float = None):
         if tkn_buy == tkn_sell:
