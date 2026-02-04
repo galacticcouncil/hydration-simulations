@@ -463,7 +463,7 @@ def get_current_omnipool_router(rpc='wss://rpc.hydradx.cloud') -> OmnipoolRouter
     return router
 
 
-def save_state(omnipool_router: OmnipoolRouter, path: str = './archive', filename: str = ''):
+def save_state(omnipool_router: OmnipoolRouter, path: str or Path = './archive', filename: str = ''):
     filepath = Path(path)
 
     if not filename:
@@ -499,14 +499,15 @@ def save_state(omnipool_router: OmnipoolRouter, path: str = './archive', filenam
         )
 
 
-def load_state(path: str = './archive', filename: str = '') -> OmnipoolRouter:
+def load_state(path: str or Path = './archive', filename: str = '') -> OmnipoolRouter:
     filepath = Path(path)
     if filepath.is_file():
         filename = filepath.name
     if filename:
         file_ls = [filename]
     else:
-        file_ls = list(filter(lambda file: file.startswith('omnipool_savefile'), os.listdir(path)))
+        # get files starting with 'omnipool' from the directory
+        file_ls = [f for f in os.listdir(path) if f.startswith('omnipool')]
     for filename in reversed(sorted(file_ls)):  # by default, load the latest first
         with open(os.path.join(path, filename), 'r') as input_file:
             json_state = json.load(input_file)
