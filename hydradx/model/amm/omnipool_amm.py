@@ -603,7 +603,7 @@ class OmnipoolState(Exchange):
 
         if tkn_buy == "LRNA":
             D = buy_quantity
-            delta_qj = 0
+            delta_qj = -buy_quantity
         else:
             A = self.liquidity[tkn_buy]
             Qb = self.lrna[tkn_buy]
@@ -675,7 +675,9 @@ class OmnipoolState(Exchange):
         slip_rate_sell = min(self.compute_slip_fee(tkn_sell, -x), max_fee - lrna_fee)
         slip_fee_sell += x * slip_rate_sell
 
-        delta_qi = -x  # + slip_fee_sell + lrna_fee_total
+        delta_qi = -(delta_qj + lrna_fee_total + slip_fee_sell + slip_fee_buy)
+        if tkn_buy == "LRNA":
+            delta_qi = 0
         return sell_quantity, delta_qi, delta_qj, asset_fee_total, lrna_fee_total, slip_fee_buy, slip_fee_sell
 
     def calculate_sell_from_buy(self, tkn_buy, tkn_sell, buy_quantity):
@@ -711,22 +713,20 @@ class OmnipoolState(Exchange):
 
             # cap total LRNA-side fee at max_fee on the sell pool
             slip_rate_sell = max(0.0, min(slip_rate_uncapped, max_fee - lrna_fee_rate))
-            total_rate_sell = lrna_fee_rate + slip_rate_sell
 
-            if total_rate_sell >= 1.0:
+            if lrna_fee_rate + slip_rate_sell >= 1.0:
                 return math.inf, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
 
             lrna_fee_total += -delta_qi * lrna_fee_rate
             slip_fee_sell += -delta_qi * slip_rate_sell
-            # delta_qi = (1.0 - total_rate_sell)
-            delta_qj = -delta_qi * (1.0 - total_rate_sell)
+            delta_qj = -delta_qi - lrna_fee_total - slip_fee_sell
         else:
             delta_qi = 0.0
             delta_qj = sell_quantity
 
         if tkn_buy == "LRNA":
 
-            return delta_qj, 0, delta_qj, 0.0, lrna_fee_total, slip_fee_buy, slip_fee_sell
+            return delta_qj, delta_qi, 0.0, 0.0, lrna_fee_total, slip_fee_buy, slip_fee_sell
 
         if delta_qj <= 0.0:
             return 0.0, 0.0, 0.0, 0.0, lrna_fee_total, 0, slip_fee_sell
@@ -744,7 +744,7 @@ class OmnipoolState(Exchange):
             return math.inf, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
 
         slip_fee_buy = delta_qj * slip_rate_buy
-        delta_qj *= 1.0 - slip_rate_buy
+        delta_qj -= slip_fee_buy
         delta_ra = Lb * delta_qj / (Hb + delta_qj)
 
         asset_fee_rate = self.compute_dynamic_fee(self._asset_fee, tkn_buy)
