@@ -499,7 +499,7 @@ def save_state(omnipool_router: OmnipoolRouter, path: str or Path = './archive',
         )
 
 
-def load_state(path: str or Path = './archive', filename: str = '') -> OmnipoolRouter:
+def load_state(path: str or Path = './cached data', filename: str = '') -> OmnipoolRouter:
     filepath = Path(path)
     if filepath.is_file():
         filename = filepath.name
