@@ -4,10 +4,168 @@ import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from pathlib import Path
+from datetime import datetime, timedelta, timezone, date, time
+import dateutil.parser
 
 # =============================================================================
 # PURE DATA FUNCTIONS  (no Streamlit — safe to import and test independently)
 # =============================================================================
+
+def get_kraken_prices(
+        start_date: str | datetime,
+        days: int | timedelta = 1,
+        interval: timedelta | None = None,
+        save_path: str | Path | None = None
+) -> pd.DataFrame:
+    import requests
+
+    if isinstance(start_date, str):
+        start_date = dateutil.parser.parse(start_date)
+
+    start_ns = int(start_date.timestamp() * 1e9)  # Kraken 'since' uses nanoseconds
+    end_ms = int((start_date + (days if isinstance(days, timedelta) else timedelta(days=days))).timestamp()) * 1000
+
+    start_str_formatted = start_date.astimezone(timezone.utc).strftime("%d %b, %Y %H:%M:%S")
+    print(f"Fetching Kraken data starting from: {start_str_formatted}")
+
+    interval_ms = int(interval.total_seconds()) * 1000 if interval else None
+    current_interval = int(start_date.timestamp()) * 1000
+    kraken_rows = []
+    since = start_ns
+
+    while True:
+        resp = requests.get(
+            "https://api.kraken.com/0/public/Trades",
+            params={"pair": "EURUSD", "since": since},
+            timeout=10
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+        if data.get("error"):
+            raise RuntimeError(f"Kraken API error: {data['error']}")
+
+        result = data["result"]
+        # The pair key in the response may differ (e.g. "EURUSD" or "ZEURZUSD")
+        pair_key = next(k for k in result if k != "last")
+        trades = result[pair_key]
+        since = int(result["last"])  # nanosecond cursor for next page
+
+        if not trades:
+            break
+
+        for trade in trades:
+            # Trade format: [price, volume, time, side, order_type, misc, trade_id]
+            ts_sec = float(trade[2])
+            ts_ms = int(ts_sec * 1000)
+
+            if ts_ms > end_ms:
+                break
+
+            if interval_ms:
+                if ts_ms < current_interval:
+                    continue
+                current_interval += interval_ms
+
+            kraken_rows.append({
+                "timestamp_ms": ts_ms,
+                "readable_time": datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S.%f')[:-3],
+                "pair": "EURUSD",
+                "price": float(trade[0])
+            })
+        else:
+            # Inner loop didn't break, check if last trade is past end
+            last_ts_ms = int(float(trades[-1][2]) * 1000)
+            if last_ts_ms >= end_ms:
+                break
+            continue
+        break  # Inner break triggered — we've passed end_ms
+
+    df_kraken = pd.DataFrame(kraken_rows)
+    if save_path:
+        output_file = Path(save_path)
+        df_kraken.to_csv(output_file, index=False)
+
+    return df_kraken
+
+
+def get_binance_prices(
+        start_date: str or datetime,
+        days: int or timedelta = 1,
+        interval: timedelta or None = None,
+        save_path: str or Path or None = None
+) -> pd.DataFrame:
+    from binance.client import Client
+    client = Client()
+
+    if isinstance(start_date, str):
+        start_date = dateutil.parser.parse(start_date)
+    start_ms = int(start_date.timestamp()) * 1000
+    end_ms = int((start_date + (days if isinstance(days, timedelta) else timedelta(days=days))).timestamp()) * 1000
+    # convert to utc time
+    start_str_formatted = start_date.astimezone(timezone.utc).strftime("%d %b, %Y %H:%M:%S")
+
+    print(f"Fetching Binance data starting from: {start_str_formatted}")
+
+    agg_trades = client.aggregate_trade_iter(
+        symbol='EURUSDT',
+        start_str=start_str_formatted
+    )
+
+    interval_ms = int(interval.total_seconds()) * 1000 if interval else None
+    current_interval = start_ms
+    binance_rows = []
+    for trade in agg_trades:
+        ts = int(trade['T'])
+
+        # Only include data points that fall within the Kraken range
+        if ts >= start_ms:
+            if interval_ms:
+                # If an interval is specified, only include trades at the specified intervals
+                if ts < current_interval:
+                    continue
+                current_interval += interval_ms
+            # Map to your specific headers: timestamp_ms, readable_time, pair, price
+            binance_rows.append({
+                "timestamp_ms": ts,
+                "readable_time": datetime.fromtimestamp(ts / 1000, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S.%f')[
+                                 :-3],
+                "pair": "EURUSD",  # Standardizing to match your Kraken 'pair' column
+                "price": float(trade['p'])
+            })
+
+        if ts > end_ms:
+            break
+
+    df_binance = pd.DataFrame(binance_rows)
+    if save_path:
+        output_file = Path(save_path)
+        df_binance.to_csv(output_file, index=False)
+
+    return df_binance
+
+
+def get_prices_for_day(exchange_name: str, day: date) -> pd.DataFrame:
+    cache_dir = Path(__file__).parent / 'cached_data' / exchange_name
+    cache_file = cache_dir / f'{day.strftime("%Y-%m-%d")}.csv'
+
+    if cache_file.exists():
+        print(f"Loading cached {exchange_name} data for {day}")
+        return pd.read_csv(cache_file)
+
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    start_dt = datetime.combine(day, time.min, tzinfo=timezone.utc)
+
+    fetchers = {
+        'binance': get_binance_prices,
+        'kraken': get_kraken_prices,
+    }
+    if exchange_name not in fetchers:
+        raise ValueError(f"Unknown exchange '{exchange_name}'. Expected one of: {list(fetchers)}")
+
+    return fetchers[exchange_name](start_date=start_dt, days=1, save_path=cache_file)
+
 
 def detect_and_load(f, local_tz):
     """
@@ -227,16 +385,17 @@ if __name__ == "__main__":
 # =============================================================================
 # STREAMLIT UI  (only runs when launched via `streamlit run price_compare.py`)
 # =============================================================================
-
 if st.runtime.exists():
     st.set_page_config(page_title="EUR/USD Price Comparison", layout="wide")
     st.title("EUR/USD Price Source Comparison")
+
+    EXCHANGES = ["binance", "kraken", "dia"]
 
     # --- Sidebar config ---
     with st.sidebar:
         st.header("Settings")
         local_tz = st.text_input(
-            "Timezone for File 2",
+            "Timezone",
             value="America/Chicago",
             help="IANA timezone name, e.g. America/New_York, Europe/London"
         )
@@ -247,26 +406,59 @@ if st.runtime.exists():
                  "contributes at most one max-positive and one max-negative point, so "
                  "total rendered points ≤ 2 × buckets."
         )
-        file1_label = st.text_input("File 1 label", value="Source A")
-        file2_label = st.text_input("File 2 label", value="Source B")
 
-    # --- File uploaders ---
-    col1, col2 = st.columns(2)
+    # --- Exchange + date range selectors ---
+    col1, col2, col3 = st.columns([1, 1, 2])
     with col1:
-        file1 = st.file_uploader(
-            f"Upload {file1_label}",
-            type="csv",
-            help="Format: unix_ms, datetime, pair, price"
-        )
+        exchange1 = st.selectbox("Exchange A", EXCHANGES, index=0)
     with col2:
-        file2 = st.file_uploader(
-            f"Upload {file2_label}",
-            type="csv",
-            help="Format: datetime, pair, $price"
+        exchange2 = st.selectbox("Exchange B", EXCHANGES, index=1)
+    with col3:
+        date_range = st.date_input(
+            "Date range",
+            value=(date.today() - timedelta(days=1), date.today() - timedelta(days=1)),
+            max_value=date.today() - timedelta(days=1),
         )
 
-    if not file1 or not file2:
-        st.info("Upload both CSV files to begin.")
+    # Validate date range
+    if isinstance(date_range, (list, tuple)) and len(date_range) == 2:
+        start_day, end_day = date_range
+    else:
+        st.info("Select a start and end date to begin.")
+        st.stop()
+
+    days_in_range = [start_day + timedelta(days=i) for i in range((end_day - start_day).days + 1)]
+    file1_label = exchange1.capitalize()
+    file2_label = exchange2.capitalize()
+
+    if st.button("Fetch Data", type="primary"):
+        st.session_state.pop("df1", None)
+        st.session_state.pop("df2", None)
+
+        with st.spinner(f"Fetching {file1_label} data..."):
+            try:
+                df1 = pd.concat(
+                    [get_prices_for_day(exchange1, d) for d in days_in_range],
+                    ignore_index=True
+                )
+                st.session_state["df1"] = df1
+            except Exception as e:
+                st.error(f"Failed to fetch {file1_label} data: {e}")
+                st.stop()
+
+        with st.spinner(f"Fetching {file2_label} data..."):
+            try:
+                df2 = pd.concat(
+                    [get_prices_for_day(exchange2, d) for d in days_in_range],
+                    ignore_index=True
+                )
+                st.session_state["df2"] = df2
+            except Exception as e:
+                st.error(f"Failed to fetch {file2_label} data: {e}")
+                st.stop()
+
+    if "df1" not in st.session_state or "df2" not in st.session_state:
+        st.info("Select exchanges and a date range, then click **Fetch Data**.")
         st.stop()
 
     # --- Validate timezone ---
@@ -276,28 +468,29 @@ if st.runtime.exists():
         st.error(f"Unknown timezone: '{local_tz}'. Use an IANA name like 'America/Chicago'.")
         st.stop()
 
-    # --- Load files (cached) ---
+    # --- Load from session state ---
     @st.cache_data
-    def load_file(f, tz):
-        return detect_and_load(f, tz)
+    def prepare_df(df, tz):
+        # Data is already in the correct format from get_prices_for_day,
+        # but we still run it through detect_and_load for normalisation + tz handling
+        return detect_and_load(df, tz)
 
     try:
-        df1 = load_file(file1, local_tz)
-        df2 = load_file(file2, local_tz)
+        df1 = prepare_df(st.session_state["df1"], local_tz)
+        df2 = prepare_df(st.session_state["df2"], local_tz)
     except Exception as e:
-        st.error(f"Failed to parse files: {e}")
+        st.error(f"Failed to prepare data: {e}")
         st.stop()
 
-    # --- Merge via last-known-value forward fill ---
+    # --- Everything below is unchanged from your original ---
     merged, overlap_start, overlap_end = build_merged(df1, df2)
 
     if merged.empty:
-        st.warning("No overlapping time range found between the two files. Check the timezone setting.")
+        st.warning("No overlapping time range found between the two sources.")
         st.stop()
 
     merged["spread_pct"] = ((merged["price1"] - merged["price2"]) / merged["price2"] * 100).round(4)
 
-    # --- Decimate for graph + hover ---
     hover_t, hover_v = decimate_spread(
         merged["time"].tolist(),
         merged["spread_pct"].tolist(),
@@ -306,7 +499,6 @@ if st.runtime.exists():
 
     segments = zero_crossing_segments(hover_t, hover_v)
 
-    # --- Stats summary ---
     max_diff_row = merged.loc[merged["spread_pct"].abs().idxmax()]
     st.markdown(
         f"**{len(merged):,}** data points &nbsp;|&nbsp; "
@@ -315,7 +507,6 @@ if st.runtime.exists():
         f" &nbsp;|&nbsp; Std: **{merged['spread_pct'].std():.4f}%**"
     )
 
-    # --- Build chart ---
     fig = make_subplots(
         rows=2, cols=1,
         shared_xaxes=True,
@@ -324,7 +515,6 @@ if st.runtime.exists():
         subplot_titles=("Price", "Spread (%)"),
     )
 
-    # Price traces
     fig.add_trace(
         go.Scatter(
             x=df1["time"], y=df1["price"],
@@ -344,7 +534,6 @@ if st.runtime.exists():
         row=1, col=1
     )
 
-    # Invisible master trace — sole source of hover info for the spread pane
     fig.add_trace(
         go.Scatter(
             x=hover_t, y=hover_v,
@@ -357,7 +546,6 @@ if st.runtime.exists():
         row=2, col=1
     )
 
-    # Colored segments — green above zero, red below
     shown_pos = shown_neg = False
     for seg_t, seg_v, is_pos in segments:
         color = "#2ECC71" if is_pos else "#E74C3C"
@@ -378,7 +566,6 @@ if st.runtime.exists():
         if is_pos: shown_pos = True
         else:      shown_neg = True
 
-    # Labeled markers for max positive and max negative spread
     max_pos_idx = merged["spread_pct"].idxmax()
     max_neg_idx = merged["spread_pct"].idxmin()
     for idx, label_color in [(max_pos_idx, "#2ECC71"), (max_neg_idx, "#E74C3C")]:
@@ -410,7 +597,6 @@ if st.runtime.exists():
 
     st.plotly_chart(fig, use_container_width=True)
 
-    # --- Optional raw data expander ---
     with st.expander("View merged data table"):
         display = merged.copy()
         display["time"]       = display["time"].dt.strftime("%Y-%m-%d %H:%M:%S UTC")

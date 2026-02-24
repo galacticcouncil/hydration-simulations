@@ -286,61 +286,6 @@ def get_unique_name(ls: list[str], name: str) -> str:
         return name + str(c).zfill(3)
 
 
-def get_binance_prices(
-        start_date: str or datetime,
-        days: int or timedelta = 1,
-        interval: timedelta or None = None,
-        save_path: str or Path or None = None
-) -> pd.DataFrame:
-    from binance.client import Client
-    client = Client()
-
-    if isinstance(start_date, str):
-        start_date = dateutil.parser.parse(start_date)
-    start_ms = int(start_date.timestamp())
-    end_ms = int((start_date + (days if isinstance(days, timedelta) else timedelta(days=days))).timestamp())
-    start_str_formatted = start_date.strftime("%d %b, %Y %H:%M:%S")
-
-    print(f"Fetching Binance data starting from: {start_str_formatted}")
-
-    agg_trades = client.aggregate_trade_iter(
-        symbol='EURUSDT',
-        start_str=start_str_formatted
-    )
-
-    interval_ms = int(interval.total_seconds()) * 1000 if interval else None
-    current_interval = start_ms
-    binance_rows = []
-    for trade in agg_trades:
-        ts = int(trade['T'])
-
-        # Only include data points that fall within the Kraken range
-        if ts >= start_ms:
-            if interval_ms:
-                # If an interval is specified, only include trades at the specified intervals
-                if ts < current_interval:
-                    continue
-                current_interval += interval_ms
-            # Map to your specific headers: timestamp_ms, readable_time, pair, price
-            binance_rows.append({
-                "timestamp_ms": ts,
-                "readable_time": datetime.fromtimestamp(ts / 1000, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S.%f')[
-                                 :-3],
-                "pair": "EURUSD",  # Standardizing to match your Kraken 'pair' column
-                "price": float(trade['p'])
-            })
-
-        if ts > end_ms:
-            break
-
-    df_binance = pd.DataFrame(binance_rows)
-    if save_path:
-        output_file = Path(save_path)
-        df_binance.to_csv(output_file, index=False)
-
-    return df_binance
-
-
 def get_omnipool_data(rpc: str = 'wss://rpc.hydradx.cloud', archive: bool = False):
     with HydraDX(rpc) as chain:
 
