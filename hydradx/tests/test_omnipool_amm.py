@@ -2634,6 +2634,7 @@ def test_lrna_split_buy_calculation():
         asset_fee=mpf(1) / 400,  # 0.0025
         slip_factor=mpf(1.0)
     )
+    omnipool.max_lrna_fee = 0.01
     output_1 = list(omnipool.calculate_in_given_out(tkn_buy="HDX", tkn_sell="LRNA", buy_quantity=1000))
     outputs = [
         output_1,
