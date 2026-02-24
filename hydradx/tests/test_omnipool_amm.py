@@ -1951,12 +1951,12 @@ def test_lowering_price(lp_multiplier, price_movement, oracle_mult):
         },
         withdrawal_fee=True,
         min_withdrawal_fee=0.0001,
+        slip_factor=None
     )
 
     market_prices = {tkn: omnipool.usd_price(tkn) for tkn in omnipool.asset_list}
 
-    holdings = {tkn: 1000000000 for tkn in omnipool.asset_list + ['LRNA']}
-    agent = Agent(holdings=holdings)
+    agent = Agent(enforce_holdings=False)
 
     swap_state, swap_agent = oamm.simulate_swap(
         old_state=omnipool.copy(),
@@ -1998,6 +1998,11 @@ def test_lowering_price(lp_multiplier, price_movement, oracle_mult):
     final_value = remove_state.cash_out(remove_agent, market_prices)
     profit = final_value - initial_value
     if profit > 0:
+        cash_out_state = remove_state.copy()
+        cash_out_agent = remove_agent.copy()
+        for tkn in omnipool.asset_list:
+            if cash_out_agent.get_holdings(tkn) < 0:
+                cash_out_state.swap(cash_out_agent, tkn_buy=tkn, tkn_sell='LRNA', buy_quantity=-cash_out_agent.holdings[tkn])
         raise
 
 
@@ -3118,7 +3123,6 @@ def test_calculate_buy_vs_sell():
         raise AssertionError('Calculate buy vs sell delta_qi do not match.')
 
 
-
 def test_lrna_without_mint_or_burn_is_constant():
     treasury_agent = Agent()
     omnipool = OmnipoolState(
@@ -3152,3 +3156,63 @@ def test_lrna_without_mint_or_burn_is_constant():
         total_lrna = sum(omnipool.lrna.values()) + agent.get_holdings('LRNA') + omnipool.lrna_fee_destination.get_holdings('LRNA')
         if total_lrna != pytest.approx(initial_total_lrna, rel=1e-40):
             raise AssertionError('LRNA amount changed despite no burn or mint.')
+
+
+def test_lrna_outputs_sum_to_zero():
+    omnipool = OmnipoolState(
+        tokens={
+            'HDX': {'liquidity': mpf(1000000), 'LRNA': mpf(1000000)},
+            'USD': {'liquidity': mpf(1000000), 'LRNA': mpf(1000000)}
+        },
+        asset_fee=mpf(1) / 400,
+        lrna_fee=mpf(1) / 2000,
+        slip_factor=1.0,
+        lrna_fee_burn=0.0,
+        lrna_mint_pct=0,
+    )
+    omnipool.max_lrna_fee = 0.01
+    sell_quantity = mpf(1000)
+    outputs = omnipool.calculate_out_given_in(tkn_buy='HDX', tkn_sell='USD', sell_quantity=sell_quantity)
+    buy_quantity, delta_qi, delta_qj, asset_fee_total, lrna_fee_total, slip_fee_buy, slip_fee_sell = outputs
+    total = delta_qi + delta_qj + lrna_fee_total + slip_fee_buy + slip_fee_sell
+    if total != pytest.approx(0, rel=1e-40):
+        raise AssertionError('Outputs do not sum to zero.')
+
+    buy_output = omnipool.calculate_in_given_out(tkn_buy='HDX', tkn_sell='USD', buy_quantity=buy_quantity)
+    sell_quantity_2, delta_qi_2, delta_qj_2, asset_fee_total_2, lrna_fee_total_2, slip_fee_buy_2, slip_fee_sell_2 = buy_output
+    total_2 = delta_qi_2 + delta_qj_2 + lrna_fee_total_2 + slip_fee_buy_2 + slip_fee_sell_2
+    if total_2 != pytest.approx(0, rel=1e-40):
+        raise AssertionError('Outputs do not sum to zero.')
+
+
+def test_no_slip_fee():
+    omnipool = OmnipoolState(
+        tokens={
+            'HDX': {'liquidity': mpf(1000000), 'LRNA': mpf(1000000)},
+            'USD': {'liquidity': mpf(1000000), 'LRNA': mpf(1000000)}
+        },
+        asset_fee=mpf(1) / 400,
+        lrna_fee=mpf(1) / 2000,
+        slip_factor=0.0,
+        lrna_fee_burn=0.0,
+        lrna_mint_pct=0,
+    )
+    omnipool.max_lrna_fee = 0.01
+    buy_quantity = mpf(1000)
+    outputs = omnipool.calculate_in_given_out(tkn_buy='HDX', tkn_sell='USD', buy_quantity=buy_quantity)
+    buy_quantity, delta_qi, delta_qj, asset_fee_total, lrna_fee_total, slip_fee_buy, slip_fee_sell = outputs
+    if slip_fee_buy != 0:
+        raise AssertionError('Slip fee buy should be zero.')
+    if slip_fee_sell != 0:
+        raise AssertionError('Slip fee sell should be zero.')
+    if lrna_fee_total != pytest.approx(0.0005 * (omnipool.lrna['USD'] - omnipool.lrna['USD']), rel=1e-40):
+        raise AssertionError('LRNA fee total not calculated correctly.')
+    if asset_fee_total != pytest.approx(0.0025 * buy_quantity, rel=1e-40):
+        raise AssertionError('Asset fee total not calculated correctly.')
+
+    buy_output = omnipool.calculate_in_given_out(tkn_buy='HDX', tkn_sell='USD', buy_quantity=buy_quantity)
+    sell_quantity_2, delta_qi_2, delta_qj_2, asset_fee_total_2, lrna_fee_total_2, slip_fee_buy_2, slip_fee_sell_2 = buy_output
+    if slip_fee_buy_2 != 0:
+        raise AssertionError('Slip fee buy should be zero.')
+    if slip_fee_sell_2 != 0:
+        raise AssertionError('Slip fee sell should be zero.')
