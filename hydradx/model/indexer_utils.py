@@ -1446,7 +1446,7 @@ def get_omnipool_liquidity_at_intervals(
     while curr <= end_time:
         timestamps.append(curr)
         curr += interval
-    timestamp_to_block = get_blocks_at_timestamps(timestamps, max_workers=max_workers)
+    timestamp_to_block = get_blocks_at_timestamps(timestamps)
 
     print("Fetching liquidity snapshots (Threaded)...")
 
@@ -1475,7 +1475,7 @@ def get_omnipool_liquidity_at_intervals(
 
     final_output = {}
     for ts in sorted(results_map.keys()):
-        final_output[timestamp_to_block[ts]] = results_map[ts]
+        final_output[timestamp_to_block[ts]] = {'time': ts.strftime("%Y-%m-%d-%H:%M"), **results_map[ts]}
 
     return final_output
 
