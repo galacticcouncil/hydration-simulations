@@ -8,14 +8,16 @@ import pytest
 from hypothesis import given, strategies as st, assume, settings, reproduce_failure
 from mpmath import mp, mpf
 import os
+from pathlib import Path
+
+
+os.chdir('../..')
 
 from hydradx.model.indexer_utils import get_current_omnipool, get_current_omnipool_router, get_blocks_at_timestamps \
     , get_omnipool_trades, get_omnipool_asset_data, get_asset_info_by_ids, get_omnipool_liquidity_at_intervals \
     , get_latest_stableswap_data, get_omnipool_liquidity, get_stableswap_pools
-
-os.chdir('../..')
-
-from hydradx.model import run, processing
+from hydradx.model import run
+from hydradx.model.processing import load_state
 from hydradx.model.amm import omnipool_amm as oamm
 from hydradx.model.amm.agents import Agent
 from hydradx.model.amm.global_state import GlobalState
@@ -654,3 +656,101 @@ def test_hdx_lrna_balance():
     pass
 
 
+@given(
+    pct_hdx_pool_bought=st.floats(min_value=0.001, max_value=0.99),
+    lrna_holdings=st.integers(min_value=100, max_value=50000)
+)
+def test_hdx_sandwich(pct_hdx_pool_bought: float, lrna_holdings: int):
+    pct_hdx_pool_bought = 0.5
+    lrna_holdings = 50000
+    output_token = 'tBTC'
+
+    path = Path(__file__).parent / 'cached data' / 'omnipools'
+    router = load_state(
+        path=path, filename='omnipool-2026-02-03.json'
+    )
+
+    # router = get_current_omnipool_router()
+    # save_state(
+    #     router, Path(__file__).parent / 'cached data' / 'omnipools',
+    #     filename=f"omnipool-{datetime.date.today().strftime('%Y-%m-%d')}.json"
+    # )
+
+    omnipool: OmnipoolState = router.exchanges['omnipool']
+    omnipool.lrna_mint_pct = 0.0  # disable LRNA minting for test
+    omnipool.lrna_fee_burn = 0.0  # disable LRNA burning for test
+    initial_omnipool = omnipool.copy()
+
+    sell_quantity = omnipool.calculate_sell_from_buy(
+        tkn_buy='HDX', tkn_sell=output_token, buy_quantity=omnipool.liquidity['HDX'] * pct_hdx_pool_bought
+    )
+    lrna_seller = Agent(enforce_holdings=False, holdings={'LRNA': lrna_holdings, output_token: sell_quantity})
+
+    hdx_initial_price = router.price('HDX', 'Tether')
+    output_initial_price = router.price(output_token, 'Tether')
+
+    router.swap(
+        agent=lrna_seller,
+        tkn_buy='HDX',
+        tkn_sell=output_token,
+        sell_quantity=sell_quantity
+    )
+
+    hdx_buy_price = router.price('HDX', 'Tether')
+    output_sell_price = router.price(output_token, 'Tether')
+
+    router.swap(
+        agent=lrna_seller,
+        tkn_sell='LRNA',
+        tkn_buy=output_token,
+        sell_quantity=lrna_holdings
+    )
+
+    # checkpoint what the price *would* be without the extra mechanism
+    hdx_otherwise_price = router.price('HDX', 'Tether')
+    output_otherwise_price = router.price(output_token, 'Tether')
+
+    # move LRNA into HDX pool as per proposed mechanism
+    omnipool.lrna[output_token] -= lrna_holdings
+    omnipool.lrna['HDX'] += lrna_holdings
+
+    hdx_price_after_transfer = router.price('HDX', 'Tether')
+    output_price_after_transfer = router.price(output_token, 'Tether')
+
+    gain_from_lrna = lrna_seller.get_holdings(output_token)
+
+    router.swap(lrna_seller, tkn_sell='HDX', tkn_buy=output_token, sell_quantity=lrna_seller.get_holdings('HDX'))
+    buy_quantity = lrna_seller.get_holdings(output_token) - gain_from_lrna
+    gain_from_arb = lrna_seller.get_holdings(output_token) - gain_from_lrna - lrna_seller.initial_holdings[output_token]
+
+    hdx_final_price = router.price('HDX', 'Tether')
+    output_final_price = router.price(output_token, 'Tether')
+    if gain_from_arb > 0:
+        profit = gain_from_arb * router.price(output_token, 'Tether')
+        test_summary = f"""
+        LRNA holdings: {lrna_holdings}
+        {output_token} holdings: {sell_quantity}
+
+        bought {pct_hdx_pool_bought * 100:.2f}% of HDX pool for {sell_quantity} {output_token}
+        sold {lrna_holdings} LRNA for {gain_from_lrna} {output_token}
+        {lrna_holdings} LRNA moved into HDX pool, raising price by {round(hdx_final_price / hdx_buy_price, 6)}%
+        sold all HDX for {buy_quantity} {output_token}
+
+        HDX initial price: {hdx_initial_price}
+        HDX price after buying {pct_hdx_pool_bought * 100}% of pool: {hdx_buy_price}
+        HDX price after LRNA transfer: {hdx_price_after_transfer}
+        HDX price if no transfer: {hdx_otherwise_price}
+        HDX final price: {hdx_final_price}
+
+        {output_token} initial price: {output_initial_price}
+        {output_token} price after buying HDX: {output_sell_price}
+        {output_token} price after LRNA transfer: {output_price_after_transfer}
+        {output_token} price if no transfer: {output_otherwise_price}
+        {output_token} final price: {output_final_price}
+
+        trader profit: {profit}
+        HDX pools gained LRNA: {omnipool.lrna['HDX'] - initial_omnipool.lrna['HDX']}
+        """
+        print(test_summary)
+        pass
+    pass
