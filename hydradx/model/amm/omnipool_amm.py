@@ -677,7 +677,8 @@ class OmnipoolState(Exchange):
 
         delta_qi = -(delta_qj + lrna_fee_total + slip_fee_sell + slip_fee_buy)
         if tkn_buy == "LRNA":
-            delta_qi = 0
+            delta_qj = 0
+            delta_qi = -x
         return sell_quantity, delta_qi, delta_qj, asset_fee_total, lrna_fee_total, slip_fee_buy, slip_fee_sell
 
     def calculate_sell_from_buy(self, tkn_buy, tkn_sell, buy_quantity):
