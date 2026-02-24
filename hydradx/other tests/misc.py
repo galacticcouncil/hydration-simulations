@@ -1,5 +1,6 @@
 import copy
 import datetime
+from operator import truediv
 
 import math
 
@@ -19,10 +20,8 @@ from hydradx.model.amm import omnipool_amm as oamm
 from hydradx.model.amm.agents import Agent
 from hydradx.model.amm.global_state import GlobalState
 from hydradx.model.run import run
-from hydradx.model.amm.omnipool_amm import DynamicFee, OmnipoolState, OmnipoolLiquidityPosition
-from hydradx.model.amm.trade_strategies import constant_swaps, omnipool_arbitrage
-from hydradx.tests.strategies_omnipool import omnipool_reasonable_config, omnipool_config, assets_config
-import hydradx.model.production_settings as production_settings
+from hydradx.model.amm.omnipool_amm import OmnipoolState, OmnipoolLiquidityPosition
+from hydradx.model.amm.trade_strategies import omnipool_arbitrage
 
 def test_price_change_from_trade():
     liquidity = {'HDX': mpf(10000000), 'USD': mpf(1000000)}
@@ -486,9 +485,9 @@ def test_bitcoin_pump_2():
 
 def test_slip_fees_november():
     dates = [
-        datetime.date(2025, 11,i+1) for i in range(30)
+        datetime.datetime(2025, 11,i+1) for i in range(30)
     ] + [
-        datetime.date(year=2025, month=12, day=i+1) for i in range(31)
+        datetime.datetime(year=2025, month=12, day=i+1) for i in range(31)
     ]
     block_numbers = list(get_blocks_at_timestamps(dates).values())
     slip_fees_lrna = []
@@ -541,7 +540,7 @@ def test_dot_crash():
     import datetime
     from hydradx.model.indexer_utils import get_omnipool_liquidity_at_intervals
     interval = datetime.timedelta(days=365)
-    end_date = datetime.date.today()
+    end_date = datetime.datetime.today()
     blocks = list(get_blocks_at_timestamps([end_date - interval, end_date]).values())
     balances = [get_omnipool_liquidity(block) for block in blocks]
     omnipool_2024 = OmnipoolState(
