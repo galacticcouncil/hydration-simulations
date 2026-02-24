@@ -7,6 +7,7 @@ from hydradx.model.amm.omnipool_amm import OmnipoolState
 from hydradx.model.amm.agents import Agent
 from hypothesis import given, strategies as strat, assume, settings, reproduce_failure
 import os
+from pathlib import Path
 
 from hydradx.tests.utils import find_test_directory
 
@@ -213,3 +214,15 @@ def test_slip_fees_chart():
 def test_hdx_h2o():
     from hydradx.apps.omnipool import hdx_h2o
 
+
+def test_hdx_buy_burn():
+    from hydradx.apps.omnipool import hdx_buy_burn
+
+def test_eur_usd():
+    from hydradx.apps.stableswap.eur_usd import run_comparison
+    result = run_comparison(
+        file1_path=Path(__file__).parent / "cached data" / "dia_eur_usd_data.csv",
+        file2_path=Path(__file__).parent / "cached data" / "kraken_eur_usd_data.csv"
+    )
+    print(result["stats"])
+    print(result["merged"].head(20))
