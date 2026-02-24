@@ -1261,6 +1261,8 @@ class OmnipoolState(Exchange):
                 numeraire_synonyms.append(eq)
         value = 0
         for tkn in assets:
+            if assets[tkn] == 0:
+                continue
             equivalents = [tkn]
             if tkn in equivalency_map:
                 equivalents += [equivalency_map[tkn]]
