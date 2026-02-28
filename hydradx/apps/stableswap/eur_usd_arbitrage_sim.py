@@ -170,7 +170,7 @@ def get_binance_prices(
 
 
 def get_prices_for_day(exchange_name: str, day: date) -> pd.DataFrame:
-    cache_dir = Path(__file__).parent / 'cached data' / exchange_name
+    cache_dir = Path(__file__).parent / 'price data' / exchange_name
     cache_file = cache_dir / f'{day.strftime("%Y-%m-%d")}.csv'
 
     if cache_file.exists():
@@ -204,7 +204,7 @@ def load_prices_cached(exchange: str, day_keys: tuple[str, ...]) -> pd.DataFrame
 
 @st.cache_data(show_spinner=False)
 def load_dia_cached() -> pd.DataFrame:
-    dia_path = Path(__file__).parent / "cached data" / "DIA" / "DIA_data.csv"
+    dia_path = Path(__file__).parent / "price data" / "DIA" / "DIA_data.csv"
     if not dia_path.exists():
         return pd.DataFrame(columns=["timestamp_ms", "time", "price"])
 
