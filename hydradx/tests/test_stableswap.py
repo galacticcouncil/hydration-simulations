@@ -1315,3 +1315,26 @@ def test_balance_ratio_at_price(price, amp):
     pool = StableSwapPoolState(tokens, amp)
     spot = pool.price('HOLLAR', 'USDT')
     assert spot == pytest.approx(price, rel=1e-15)
+
+
+def test_calculate_buy_from_sell():
+    stableswap = StableSwapPoolState(
+        tokens={'a': 1000, 'b': 2000},
+        amplification=100,
+        peg=0.5
+    )
+    for i in range(1000):
+        agent = Agent()
+        stableswap.set_peg_target(0.5 + i * 0.0001)
+        stableswap.update()
+        buy_quantity = stableswap.calculate_buy_from_sell(tkn_buy='a', tkn_sell='b', sell_quantity=1)
+        stableswap.swap(
+            agent=agent,
+            tkn_buy='a',
+            tkn_sell='b',
+            sell_quantity=1
+        )
+        real_buy_quantity = agent.holdings['a']
+        if buy_quantity != pytest.approx(real_buy_quantity, rel=1e-12):
+            print('wrong price')
+    pass
