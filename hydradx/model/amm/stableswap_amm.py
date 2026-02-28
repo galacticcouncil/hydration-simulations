@@ -201,14 +201,32 @@ class StableSwapPoolState(Exchange):
         return self.liquidity[tkn_buy]
 
     def calculate_buy_from_sell(self, tkn_buy, tkn_sell, sell_quantity):
-        fee = self.calculate_fee()
-        reserves = self.modified_balances(delta={tkn_sell: sell_quantity}, omit=[tkn_buy])
-        return (self.liquidity[tkn_buy] - self.calculate_y(reserves, self.d)) * (1 - fee)
+        # 1. Calculate what the new peg and fee will be at the time of the swap
+        new_peg, fee = self._calculate_new_peg()
+
+        # 2. Store original peg to restore it later
+        original_peg = self.peg
+        self.peg = new_peg
+
+        try:
+            # 3. Now self.d and calculate_y will use the updated peg, exactly matching swap()
+            reserves = self.modified_balances(delta={tkn_sell: sell_quantity}, omit=[tkn_buy])
+            return (self.liquidity[tkn_buy] - self.calculate_y(reserves, self.d)) * (1 - fee)
+        finally:
+            # 4. Revert the state
+            self.peg = original_peg
 
     def calculate_sell_from_buy(self, tkn_buy, tkn_sell, buy_quantity):
-        fee = self.calculate_fee()
-        reserves = self.modified_balances(delta={tkn_buy: -buy_quantity}, omit=[tkn_sell])
-        return (self.calculate_y(reserves, self.d) - self.liquidity[tkn_sell]) / (1 - fee)
+        new_peg, fee = self._calculate_new_peg()
+
+        original_peg = self.peg
+        self.peg = new_peg
+
+        try:
+            reserves = self.modified_balances(delta={tkn_buy: -buy_quantity}, omit=[tkn_sell])
+            return (self.calculate_y(reserves, self.d) - self.liquidity[tkn_sell]) / (1 - fee)
+        finally:
+            self.peg = original_peg
 
     def price(self, tkn, denomination: str = ''):
         """
