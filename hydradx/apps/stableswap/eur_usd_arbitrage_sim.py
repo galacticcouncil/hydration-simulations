@@ -458,7 +458,7 @@ if st.runtime.exists():
 
     date_range = sidebar.date_input(
         "Date range",
-        value=(date.today() - timedelta(days=1), date.today() - timedelta(days=1)),
+        value=(date.fromisoformat("2026-02-17"), date.fromisoformat("2026-02-24")),
         max_value=date.today() - timedelta(days=1),
         key="date_range",
     )
