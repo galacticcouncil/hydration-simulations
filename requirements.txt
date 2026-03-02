@@ -25,3 +25,4 @@ websockets==10.0
 eth-utils~=5.2.0
 streamlit>=1.42.2
 python-binance
+boto3
