@@ -7,6 +7,7 @@ import plotly.graph_objects as go
 import dateutil
 from datetime import date, datetime, timedelta, timezone, time
 from pathlib import Path
+from io import StringIO
 
 import sys
 
@@ -16,6 +17,125 @@ sys.path.append(project_root)
 from hydradx.model.amm.stableswap_amm import StableSwapPoolState
 from hydradx.model.amm.fixed_price import FixedPriceExchange
 from hydradx.model.amm.agents import Agent
+
+
+# =============================================================================
+# CLOUD STORAGE (S3 / S3-compatible)
+# =============================================================================
+# Configure via Streamlit secrets (secrets.toml) or environment variables:
+#
+#   [s3]
+#   bucket      = "my-arb-sim-cache"
+#   prefix      = "price-cache/"          # optional, default ""
+#   aws_access_key_id     = "..."
+#   aws_secret_access_key = "..."
+#   region_name           = "us-east-1"   # optional
+#   endpoint_url          = "..."         # optional — for R2, MinIO, etc.
+#
+# If none of the above are set, cloud storage is silently disabled and the
+# app behaves exactly as before (local disk cache only).
+# =============================================================================
+
+def _s3_config() -> dict | None:
+    """
+    Return S3 config dict from st.secrets or environment variables,
+    or None if cloud storage is not configured.
+    """
+    # Try Streamlit secrets first
+    try:
+        cfg = st.secrets.get("s3", {})
+        bucket = cfg.get("bucket") or os.environ.get("S3_BUCKET")
+    except Exception:
+        bucket = os.environ.get("S3_BUCKET")
+        cfg = {}
+
+    if not bucket:
+        return None  # cloud storage not configured — that's fine
+
+    def _get(key: str, env_key: str | None = None) -> str | None:
+        val = cfg.get(key)
+        if val:
+            return val
+        return os.environ.get(env_key or key.upper())
+
+    return {
+        "bucket": bucket,
+        "prefix": _get("prefix", "S3_PREFIX") or "",
+        "aws_access_key_id": _get("aws_access_key_id", "AWS_ACCESS_KEY_ID"),
+        "aws_secret_access_key": _get("aws_secret_access_key", "AWS_SECRET_ACCESS_KEY"),
+        "region_name": _get("region_name", "AWS_DEFAULT_REGION"),
+        "endpoint_url": _get("endpoint_url", "S3_ENDPOINT_URL"),  # for R2 / MinIO
+    }
+
+
+@st.cache_resource(show_spinner=False)
+def _get_s3_client():
+    """Return a boto3 S3 client (cached for the session), or None."""
+    cfg = _s3_config()
+    if cfg is None:
+        return None, None
+
+    try:
+        import boto3
+
+        client_kwargs = {}
+        for key in ("aws_access_key_id", "aws_secret_access_key", "region_name", "endpoint_url"):
+            if cfg.get(key):
+                client_kwargs[key] = cfg[key]
+
+        client = boto3.client("s3", **client_kwargs)
+        return client, cfg
+    except ImportError:
+        st.warning("boto3 is not installed — cloud cache disabled. Run `pip install boto3`.")
+        return None, None
+    except Exception as exc:
+        st.warning(f"Could not initialise S3 client — cloud cache disabled: {exc}")
+        return None, None
+
+
+def _s3_key(exchange: str, day: date, cfg: dict) -> str:
+    prefix = cfg["prefix"].rstrip("/")
+    key = f"{exchange}/{day.isoformat()}.csv"
+    return f"{prefix}/{key}" if prefix else key
+
+
+def _download_from_s3(exchange: str, day: date) -> pd.DataFrame | None:
+    """
+    Try to download a cached CSV from S3. Returns a DataFrame on success,
+    None if the object doesn't exist or cloud storage is unconfigured.
+    """
+    client, cfg = _get_s3_client()
+    if client is None:
+        return None
+
+    key = _s3_key(exchange, day, cfg)
+    try:
+        response = client.get_object(Bucket=cfg["bucket"], Key=key)
+        body = response["Body"].read().decode("utf-8")
+        df = pd.read_csv(StringIO(body))
+        print(f"[cloud] Downloaded {exchange}/{day} from s3://{cfg['bucket']}/{key}")
+        return df
+    except client.exceptions.NoSuchKey:
+        return None  # not cached yet — fetch from exchange API
+    except Exception as exc:
+        print(f"[cloud] S3 download failed for {key}: {exc}")
+        return None
+
+
+def _upload_to_s3(df: pd.DataFrame, exchange: str, day: date) -> None:
+    """Upload a price DataFrame as CSV to S3. Silently skips on any error."""
+    client, cfg = _get_s3_client()
+    if client is None:
+        return
+
+    key = _s3_key(exchange, day, cfg)
+    try:
+        body = df.to_csv(index=False).encode("utf-8")
+        client.put_object(Bucket=cfg["bucket"], Key=key, Body=body, ContentType="text/csv")
+        print(f"[cloud] Uploaded {exchange}/{day} to s3://{cfg['bucket']}/{key}")
+    except Exception as exc:
+        print(f"[cloud] S3 upload failed for {key}: {exc}")
+
 
 # =============================================================================
 # PURE DATA FUNCTIONS
@@ -126,7 +246,6 @@ def get_binance_prices(
         start_date = dateutil.parser.parse(start_date)
     start_ms = int(start_date.timestamp()) * 1000
     end_ms = int((start_date + (days if isinstance(days, timedelta) else timedelta(days=days))).timestamp()) * 1000
-    # convert to utc time
     start_str_formatted = start_date.astimezone(timezone.utc).strftime("%d %b, %Y %H:%M:%S")
 
     print(f"Fetching Binance data starting from: {start_str_formatted}")
@@ -142,19 +261,16 @@ def get_binance_prices(
     for trade in agg_trades:
         ts = int(trade['T'])
 
-        # Only include data points that fall within the Kraken range
         if ts >= start_ms:
             if interval_ms:
-                # If an interval is specified, only include trades at the specified intervals
                 if ts < current_interval:
                     continue
                 current_interval += interval_ms
-            # Map to your specific headers: timestamp_ms, readable_time, pair, price
             binance_rows.append({
                 "timestamp_ms": ts,
                 "readable_time": datetime.fromtimestamp(ts / 1000, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S.%f')[
                                  :-3],
-                "pair": "EURUSD",  # Standardizing to match your Kraken 'pair' column
+                "pair": "EURUSD",
                 "price": float(trade['p'])
             })
 
@@ -170,13 +286,29 @@ def get_binance_prices(
 
 
 def get_prices_for_day(exchange_name: str, day: date) -> pd.DataFrame:
-    cache_dir = Path(__file__).parent / 'price data' / exchange_name
+    """
+    Load price data for one exchange/day using a three-tier cache:
+      1. Local disk  — instant, survives app restarts on the same machine
+      2. S3 / R2     — fast, shared across all deployed instances
+      3. Exchange API — source of truth, result is written back to both caches
+    """
+    cache_dir = Path(__file__).parent / 'cached data' / exchange_name
     cache_file = cache_dir / f'{day.strftime("%Y-%m-%d")}.csv'
 
+    # ── Tier 1: local disk ───────────────────────────────────────────────────
     if cache_file.exists():
-        print(f"Loading cached {exchange_name} data for {day}")
+        print(f"[local] Loading cached {exchange_name} data for {day}")
         return pd.read_csv(cache_file)
 
+    # ── Tier 2: cloud (S3 / R2 / MinIO) ─────────────────────────────────────
+    cloud_df = _download_from_s3(exchange_name, day)
+    if cloud_df is not None:
+        # Populate local disk so the next hit is even faster
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        cloud_df.to_csv(cache_file, index=False)
+        return cloud_df
+
+    # ── Tier 3: exchange API ─────────────────────────────────────────────────
     cache_dir.mkdir(parents=True, exist_ok=True)
     start_dt = datetime.combine(day, time.min, tzinfo=timezone.utc)
 
@@ -187,7 +319,13 @@ def get_prices_for_day(exchange_name: str, day: date) -> pd.DataFrame:
     if exchange_name not in fetchers:
         raise ValueError(f"Unknown exchange '{exchange_name}'. Expected one of: {list(fetchers)}")
 
-    return fetchers[exchange_name](start_date=start_dt, days=1, save_path=cache_file)
+    df = fetchers[exchange_name](start_date=start_dt, days=1, save_path=cache_file)
+
+    # Write to cloud so other instances (or future deployments) skip the API call
+    _upload_to_s3(df, exchange_name, day)
+
+    return df
+
 
 def _load_prices(exchange: str, day_keys: tuple[str, ...]) -> pd.DataFrame:
     days = [date.fromisoformat(k) for k in day_keys]
@@ -196,7 +334,6 @@ def _load_prices(exchange: str, day_keys: tuple[str, ...]) -> pd.DataFrame:
         return pd.DataFrame()
     return pd.concat(frames, ignore_index=True)
 
-
 @st.cache_data(show_spinner=False)
 def load_prices_cached(exchange: str, day_keys: tuple[str, ...]) -> pd.DataFrame:
     return _load_prices(exchange, day_keys)
@@ -204,7 +341,7 @@ def load_prices_cached(exchange: str, day_keys: tuple[str, ...]) -> pd.DataFrame
 
 @st.cache_data(show_spinner=False)
 def load_dia_cached() -> pd.DataFrame:
-    dia_path = Path(__file__).parent / "price data" / "DIA" / "DIA_data.csv"
+    dia_path = Path(__file__).parent / "DIA" / "DIA_data.csv"
     if not dia_path.exists():
         return pd.DataFrame(columns=["timestamp_ms", "time", "price"])
 
@@ -321,7 +458,6 @@ def run_sim(
         eur_usd_stablepool.set_peg_target(next_peg)
         eur_usd_stablepool.update()
         binance.prices = {"EUR": step["external_price"], "USD": 1.0}
-        # find arbitrage opportunity
         max_arb_size = 2 ** 10
         arb_size = max_arb_size / 2
         max_iterations = 10
@@ -351,13 +487,9 @@ def run_sim(
                     "profit": step["external_price"] * trade["eur"] + trade["usd"]
                 } for trade in trade_opts
             ]
-            best = max(
-                results,
-                key=lambda item: item["profit"]
-            )
+            best = max(results, key=lambda item: item["profit"])
             arb_size = abs(best['usd'])
-            pass
-        if best["profit"] > 0.1:  # minimum viable arb size
+        if best["profit"] > 0.1:
             start_usd = arbitrageur.get_holdings('USD')
             if buy_or_sell == "buy":
                 eur_usd_stablepool.swap(
@@ -385,16 +517,14 @@ def run_sim(
                 )
             profit = arbitrageur.get_holdings('USD') - start_usd
             profit_over_time[datetime.fromtimestamp(step["timestamp_ms"] / 1000)] = profit
-            if abs(profit - best["profit"]) > 0.00001:
-                pass
             if profit < 0:
                 raise ValueError("arbitrage messed up")
-            pass
         else:
             continue
 
     profit = arbitrageur.get_holdings('USD')
     return profit_over_time
+
 
 def smooth_binance_with_kraken(
     binance_df: pd.DataFrame,
@@ -450,20 +580,23 @@ if st.runtime.exists():
     st.set_page_config(page_title="EUR/USD Arbitrage Simulation", layout="wide")
     st.title("EUR/USD Arbitrage Simulation")
 
-    # ------------------------------------------------------------------
-    # Sidebar: date picker is always shown
-    # ------------------------------------------------------------------
+    # Show cloud storage status unobtrusively in the sidebar
+    _client, _cfg = _get_s3_client()
     sidebar = st.sidebar.container()
+    if _cfg:
+        sidebar.success(f"☁️ Cloud cache: `{_cfg['bucket']}/{_cfg['prefix']}`", icon=None)
+    else:
+        sidebar.info("☁️ Cloud cache: not configured (local only)", icon=None)
+
     sidebar.header("Settings")
 
     date_range = sidebar.date_input(
         "Date range",
-        value=(date.fromisoformat("2026-02-17"), date.fromisoformat("2026-02-24")),
+        value=(date.today() - timedelta(days=1), date.today() - timedelta(days=1)),
         max_value=date.today() - timedelta(days=1),
         key="date_range",
     )
 
-    # Validate date selection
     if not (isinstance(date_range, (list, tuple)) and len(date_range) == 2):
         st.info("Select a start and end date to begin.")
         st.stop()
@@ -471,9 +604,6 @@ if st.runtime.exists():
     start_day, end_day = date_range
     range_key = (start_day.isoformat(), end_day.isoformat())
 
-    # ------------------------------------------------------------------
-    # Reset state when date range changes
-    # ------------------------------------------------------------------
     if st.session_state.get("selected_range_key") != range_key:
         st.session_state["selected_range_key"] = range_key
         st.session_state["data_ready"] = False
@@ -483,9 +613,6 @@ if st.runtime.exists():
         st.session_state["kraken_df"] = pd.DataFrame()
         st.session_state["dia_df"] = pd.DataFrame()
 
-    # ------------------------------------------------------------------
-    # Phase 1: Fetch data if not yet loaded
-    # ------------------------------------------------------------------
     if not st.session_state.get("data_ready", False):
         days_in_range = [start_day + timedelta(days=i) for i in range((end_day - start_day).days + 1)]
         day_keys = tuple(d.isoformat() for d in days_in_range)
@@ -519,9 +646,6 @@ if st.runtime.exists():
         st.session_state["dia_df"] = dia_df
         st.session_state["data_ready"] = True
 
-    # ------------------------------------------------------------------
-    # Phase 2: Data is loaded — show simulation controls
-    # ------------------------------------------------------------------
     binance_df = st.session_state["binance_df"]
     kraken_df = st.session_state["kraken_df"]
     dia_df = st.session_state["dia_df"]
@@ -542,11 +666,9 @@ if st.runtime.exists():
             st.warning("No DIA oracle data available. Simulation requires DIA data.")
         st.stop()
 
-    # Show simulation parameter controls in sidebar
     binance_bias_factor = sidebar.slider(
         "Binance bias factor",
-        min_value=1.0,
-        max_value=10.0,
+        min_value=1.0, max_value=10.0,
         value=st.session_state.get("binance_bias_factor", 3.0),
         step=0.1,
         help="How closely the simulation price tracks Binance as opposed to Kraken.",
@@ -554,27 +676,19 @@ if st.runtime.exists():
     )
     pool_amplification = sidebar.slider(
         "StableSwap amplification factor",
-        min_value=10,
-        max_value=500,
+        min_value=10, max_value=500,
         value=st.session_state.get("pool_amplification", 100),
-        step=10,
-        key="pool_amplification",
+        step=10, key="pool_amplification",
     )
     trade_fee = sidebar.slider(
         "StableSwap trade fee",
-        min_value=0.0,
-        max_value=0.001,
+        min_value=0.0, max_value=0.001,
         value=st.session_state.get("trade_fee", 0.0005),
-        step=0.0001,
-        key="trade_fee",
-        format="%.4f",
+        step=0.0001, key="trade_fee", format="%.4f",
     )
 
     run_sim_clicked = sidebar.button("Run simulation", type="primary")
 
-    # ------------------------------------------------------------------
-    # Price chart (shown once after data loads, always visible)
-    # ------------------------------------------------------------------
     combined_df = smooth_binance_with_kraken(binance_df, kraken_df, binance_bias_factor)
 
     if not combined_df.empty:
@@ -619,19 +733,14 @@ if st.runtime.exists():
         fig.update_yaxes(title_text="EUR/USD", tickformat=".5f")
         fig.update_xaxes(title_text="Time (UTC)")
         st.plotly_chart(fig, use_container_width=True)
-
         st.divider()
 
-    # Invalidate prior simulation results when params change
     sim_param_key = (binance_bias_factor, pool_amplification, trade_fee)
     if st.session_state.get("sim_param_key") != sim_param_key:
         st.session_state["sim_param_key"] = sim_param_key
         st.session_state["simulation_ran"] = False
         st.session_state["simulation_results"] = None
 
-    # ------------------------------------------------------------------
-    # Phase 3: Run simulation when button clicked
-    # ------------------------------------------------------------------
     if run_sim_clicked:
         simulation_points = build_simulation_points(combined_df, dia_df, step_seconds=6)
 
@@ -647,9 +756,6 @@ if st.runtime.exists():
             st.session_state["simulation_results"] = sim_results
             st.session_state["simulation_ran"] = True
 
-    # ------------------------------------------------------------------
-    # Phase 4: Display results
-    # ------------------------------------------------------------------
     if not st.session_state.get("simulation_ran"):
         st.info("Configure the parameters in the sidebar, then click **Run simulation**.")
     else:
@@ -663,8 +769,6 @@ if st.runtime.exists():
                 )
                 .sort_values("time")
             )
-            # Append a zero-profit sentinel at the simulation end so the chart
-            # covers the full time range even if the last arb event was early.
             sim_end = st.session_state.get("simulation_end_time")
             if sim_end is not None and (profit_df.empty or sim_end > profit_df["time"].iloc[-1]):
                 sentinel = pd.DataFrame({"time": [sim_end], "profit": [0.0]})
@@ -688,9 +792,7 @@ if st.runtime.exists():
                 )
             )
             profit_fig.update_layout(
-                height=500,
-                template="plotly_dark",
-                hovermode="x unified",
+                height=500, template="plotly_dark", hovermode="x unified",
                 margin=dict(t=40, b=40, l=60, r=20),
             )
             profit_fig.update_yaxes(title_text="USD Profit (Cumulative)", tickformat=".4f")
