@@ -803,7 +803,7 @@ if st.runtime.exists():
 # =============================================================================
 # CLI DEMO
 # =============================================================================
-if __name__ == "__main__":
+if __name__ == "__main__" and not st.runtime.exists():
     demo_day = date.today() - timedelta(days=1)
     binance_demo = get_prices_for_day("binance", demo_day)
     kraken_demo = get_prices_for_day("kraken", demo_day)
