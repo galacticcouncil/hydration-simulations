@@ -219,10 +219,25 @@ def test_hdx_buy_burn():
     from hydradx.apps.omnipool import hdx_buy_burn
 
 def test_eur_usd():
-    from hydradx.apps.stableswap.eur_usd import run_comparison
+    import datetime
+    from hydradx.apps.stableswap.eur_usd import run_comparison, get_kraken_prices, get_binance_prices
+    binance_prices = get_binance_prices(start_date=datetime.datetime.today(), days=1)
+    kraken_prices = get_kraken_prices(start_date=datetime.datetime.today(), days=1)
     result = run_comparison(
-        file1_path=Path(__file__).parent / "cached data" / "dia_eur_usd_data.csv",
+        file1_path=Path(__file__).parent / "cached data" / "binance_prices.csv",
         file2_path=Path(__file__).parent / "cached data" / "kraken_eur_usd_data.csv"
     )
     print(result["stats"])
     print(result["merged"].head(20))
+
+def test_arbitrage_sim():
+    from datetime import date, timedelta
+    from hydradx.apps.stableswap.eur_usd_arbitrage_sim import run_sim, get_prices_for_day, smooth_binance_with_kraken, \
+         build_simulation_points, load_dia_cached
+    demo_day = date.today() - timedelta(days=5)
+    binance_demo = get_prices_for_day("binance", demo_day)
+    kraken_demo = get_prices_for_day("kraken", demo_day)
+    master_df = smooth_binance_with_kraken(binance_demo, kraken_demo, binance_bias_factor=3.0)
+    dia_prices = load_dia_cached()
+    steps = build_simulation_points(master_df, dia_prices)
+    run_sim(steps, trade_fee=0.0001, amplification=1000)
