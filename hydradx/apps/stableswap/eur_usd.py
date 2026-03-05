@@ -2,14 +2,12 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from pathlib import Path
 from datetime import datetime, timedelta, timezone, date, time
 import dateutil.parser
 
 # =============================================================================
-# PURE DATA FUNCTIONS  (no Streamlit — safe to import and test independently)
+# PURE DATA FUNCTIONS
 # =============================================================================
 
 def get_kraken_prices(
@@ -19,50 +17,64 @@ def get_kraken_prices(
         save_path: str | Path | None = None
 ) -> pd.DataFrame:
     import requests
+    import time
 
     if isinstance(start_date, str):
         start_date = dateutil.parser.parse(start_date)
 
-    start_ns = int(start_date.timestamp() * 1e9)  # Kraken 'since' uses nanoseconds
+    start_ms = int(start_date.timestamp()) * 1000
     end_ms = int((start_date + (days if isinstance(days, timedelta) else timedelta(days=days))).timestamp()) * 1000
 
     start_str_formatted = start_date.astimezone(timezone.utc).strftime("%d %b, %Y %H:%M:%S")
     print(f"Fetching Kraken data starting from: {start_str_formatted}")
 
     interval_ms = int(interval.total_seconds()) * 1000 if interval else None
-    current_interval = int(start_date.timestamp()) * 1000
+    current_interval = start_ms
     kraken_rows = []
-    since = start_ns
+    since = int(start_date.timestamp() * 1e9)
+
+    INITIAL_RETRY_DELAY = 2
+    MAX_RETRY_DELAY = 60
+    MAX_RETRIES = 8
 
     while True:
-        resp = requests.get(
-            "https://api.kraken.com/0/public/Trades",
-            params={"pair": "EURUSD", "since": since},
-            timeout=10
-        )
-        resp.raise_for_status()
-        data = resp.json()
+        retry_delay = INITIAL_RETRY_DELAY
+        for attempt in range(MAX_RETRIES):
+            resp = requests.get(
+                "https://api.kraken.com/0/public/Trades",
+                params={"pair": "EURUSD", "since": since},
+                timeout=10
+            )
+            resp.raise_for_status()
+            data = resp.json()
 
-        if data.get("error"):
-            raise RuntimeError(f"Kraken API error: {data['error']}")
+            if not data.get("error"):
+                break
+
+            if any("Too many requests" in e for e in data["error"]):
+                print(f"Rate limited, retrying in {retry_delay}s... (attempt {attempt + 1}/{MAX_RETRIES})")
+                time.sleep(retry_delay)
+                retry_delay = min(retry_delay * 2, MAX_RETRY_DELAY)
+            else:
+                raise RuntimeError(f"Kraken API error: {data['error']}")
+        else:
+            raise RuntimeError(f"Kraken API rate limit not resolved after {MAX_RETRIES} retries")
 
         result = data["result"]
-        # The pair key in the response may differ (e.g. "EURUSD" or "ZEURZUSD")
         pair_key = next(k for k in result if k != "last")
         trades = result[pair_key]
-        since = int(result["last"])  # nanosecond cursor for next page
+        since = int(result["last"])
 
         if not trades:
             break
 
+        done = False
         for trade in trades:
-            # Trade format: [price, volume, time, side, order_type, misc, trade_id]
-            ts_sec = float(trade[2])
-            ts_ms = int(ts_sec * 1000)
+            ts_ms = int(float(trade[2]) * 1000)
 
             if ts_ms > end_ms:
+                done = True
                 break
-
             if interval_ms:
                 if ts_ms < current_interval:
                     continue
@@ -74,13 +86,13 @@ def get_kraken_prices(
                 "pair": "EURUSD",
                 "price": float(trade[0])
             })
-        else:
-            # Inner loop didn't break, check if last trade is past end
-            last_ts_ms = int(float(trades[-1][2]) * 1000)
-            if last_ts_ms >= end_ms:
-                break
-            continue
-        break  # Inner break triggered — we've passed end_ms
+
+        if done:
+            break
+
+        last_ts_ms = int(float(trades[-1][2]) * 1000)
+        if last_ts_ms >= end_ms:
+            break
 
     df_kraken = pd.DataFrame(kraken_rows)
     if save_path:
@@ -147,7 +159,7 @@ def get_binance_prices(
 
 
 def get_prices_for_day(exchange_name: str, day: date) -> pd.DataFrame:
-    cache_dir = Path(__file__).parent / 'cached_data' / exchange_name
+    cache_dir = Path(__file__).parent / 'price data' / exchange_name
     cache_file = cache_dir / f'{day.strftime("%Y-%m-%d")}.csv'
 
     if cache_file.exists():
@@ -302,17 +314,6 @@ def decimate_spread(times, values, n_buckets):
     keep_v = [p[1] for p in all_points]
     return keep_t, keep_v
 
-
-# =============================================================================
-# IMPORTABLE DEBUG ENTRY POINT
-# Usage:
-#   from price_compare import run_comparison
-#   result = run_comparison("file_a.csv", "file_b.csv", local_tz="America/Chicago")
-#   print(result["stats"])
-#   print(result["merged"].head(20))
-# Also runnable directly:
-#   python price_compare.py file_a.csv file_b.csv [timezone]
-# =============================================================================
 def run_comparison(file1_path, file2_path, local_tz="America/Chicago", n_buckets=400):
     """
     Load, parse, merge, and compute spread for two EUR/USD CSV files.
@@ -369,6 +370,83 @@ def run_comparison(file1_path, file2_path, local_tz="America/Chicago", n_buckets
         "stats":   stats,
     }
 
+def _to_price_df(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    df["timestamp_ms"] = pd.to_numeric(df["timestamp_ms"], errors="coerce")
+    df["price"] = pd.to_numeric(df["price"], errors="coerce")
+    df = df.dropna(subset=["timestamp_ms", "price"]).sort_values("timestamp_ms")
+    df["time"] = pd.to_datetime(df["timestamp_ms"], unit="ms", utc=True)
+    return df[["timestamp_ms", "time", "price"]]
+
+
+def _interp_prices(target_ms: np.ndarray, source_ms: np.ndarray, source_prices: np.ndarray) -> np.ndarray:
+    if len(source_ms) == 0:
+        return np.full_like(target_ms, np.nan, dtype=float)
+    if len(source_ms) == 1:
+        return np.full_like(target_ms, float(source_prices[0]), dtype=float)
+
+    interp = np.interp(target_ms, source_ms, source_prices).astype(float)
+    out_of_range = (target_ms < source_ms.min()) | (target_ms > source_ms.max())
+    interp[out_of_range] = np.nan
+    return interp
+
+
+def smooth_binance_with_kraken(binance_df: pd.DataFrame, kraken_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    For each Binance timestamp, interpolate the Kraken price and choose
+    whichever (Binance or interpolated Kraken) is closer to the last
+    chosen price. Returns a DataFrame keyed on Binance timestamps.
+    """
+    binance = _to_price_df(binance_df)
+    kraken = _to_price_df(kraken_df)
+
+    if binance.empty:
+        return pd.DataFrame(columns=[
+            "timestamp_ms", "time", "binance_price", "kraken_price", "smoothed_price"
+        ])
+
+    target_ms = binance["timestamp_ms"].to_numpy(dtype=np.int64)
+    b_prices = binance["price"].to_numpy(dtype=float)
+
+    k_times = kraken["timestamp_ms"].to_numpy(dtype=np.int64)
+    k_prices = kraken["price"].to_numpy(dtype=float)
+
+    interp = _interp_prices(target_ms, k_times, k_prices)
+
+    smoothed = []
+    last_value = float(b_prices[0])
+    for b_price, k_price in zip(b_prices, interp):
+        if np.isnan(k_price):
+            chosen = b_price
+        else:
+            if abs(b_price - last_value) <= abs(k_price - last_value):
+                chosen = b_price
+            else:
+                chosen = k_price
+        smoothed.append(chosen)
+        last_value = chosen
+
+    out = pd.DataFrame({
+        "timestamp_ms": binance["timestamp_ms"],
+        "time": binance["time"],
+        "binance_price": b_prices,
+        "kraken_price": interp,
+        "smoothed_price": np.array(smoothed, dtype=float),
+    })
+    return out
+
+
+# =============================================================================
+# IMPORTABLE DEBUG ENTRY POINT
+# Usage:
+#   from price_compare import run_comparison
+#   result = run_comparison("file_a.csv", "file_b.csv", local_tz="America/Chicago")
+#   print(result["stats"])
+#   print(result["merged"].head(20))
+# Also runnable directly:
+#   python price_compare.py file_a.csv file_b.csv [timezone]
+# =============================================================================
+
 
 if __name__ == "__main__":
     import sys, pprint
@@ -389,38 +467,14 @@ if st.runtime.exists():
     st.set_page_config(page_title="EUR/USD Price Comparison", layout="wide")
     st.title("EUR/USD Price Source Comparison")
 
-    EXCHANGES = ["binance", "kraken", "dia"]
-
-    # --- Sidebar config ---
     with st.sidebar:
         st.header("Settings")
-        local_tz = st.text_input(
-            "Timezone",
-            value="America/Chicago",
-            help="IANA timezone name, e.g. America/New_York, Europe/London"
-        )
-        n_buckets = st.slider(
-            "Spread graph buckets",
-            min_value=100, max_value=1000, value=400, step=50,
-            help="The time range is divided into this many equal buckets. Each bucket "
-                 "contributes at most one max-positive and one max-negative point, so "
-                 "total rendered points ≤ 2 × buckets."
-        )
-
-    # --- Exchange + date range selectors ---
-    col1, col2, col3 = st.columns([1, 1, 2])
-    with col1:
-        exchange1 = st.selectbox("Exchange A", EXCHANGES, index=0)
-    with col2:
-        exchange2 = st.selectbox("Exchange B", EXCHANGES, index=1)
-    with col3:
         date_range = st.date_input(
             "Date range",
             value=(date.today() - timedelta(days=1), date.today() - timedelta(days=1)),
             max_value=date.today() - timedelta(days=1),
         )
 
-    # Validate date range
     if isinstance(date_range, (list, tuple)) and len(date_range) == 2:
         start_day, end_day = date_range
     else:
@@ -428,180 +482,88 @@ if st.runtime.exists():
         st.stop()
 
     days_in_range = [start_day + timedelta(days=i) for i in range((end_day - start_day).days + 1)]
-    file1_label = exchange1.capitalize()
-    file2_label = exchange2.capitalize()
 
-    if st.button("Fetch Data", type="primary"):
-        st.session_state.pop("df1", None)
-        st.session_state.pop("df2", None)
+    if st.button("Fetch Data", type="primary", key="fetch_binance_kraken"):
+        st.session_state.pop("binance_df", None)
+        st.session_state.pop("kraken_df", None)
 
-        with st.spinner(f"Fetching {file1_label} data..."):
+        with st.spinner("Fetching Binance data..."):
             try:
-                df1 = pd.concat(
-                    [get_prices_for_day(exchange1, d) for d in days_in_range],
+                binance_df = pd.concat(
+                    [get_prices_for_day("binance", d) for d in days_in_range],
                     ignore_index=True
                 )
-                st.session_state["df1"] = df1
-            except Exception as e:
-                st.error(f"Failed to fetch {file1_label} data: {e}")
+                st.session_state["binance_df"] = binance_df
+            except Exception as exc:
+                st.error(f"Failed to fetch Binance data: {exc}")
                 st.stop()
 
-        with st.spinner(f"Fetching {file2_label} data..."):
+        with st.spinner("Fetching Kraken data..."):
             try:
-                df2 = pd.concat(
-                    [get_prices_for_day(exchange2, d) for d in days_in_range],
+                kraken_df = pd.concat(
+                    [get_prices_for_day("kraken", d) for d in days_in_range],
                     ignore_index=True
                 )
-                st.session_state["df2"] = df2
-            except Exception as e:
-                st.error(f"Failed to fetch {file2_label} data: {e}")
+                st.session_state["kraken_df"] = kraken_df
+            except Exception as exc:
+                st.error(f"Failed to fetch Kraken data: {exc}")
                 st.stop()
 
-    if "df1" not in st.session_state or "df2" not in st.session_state:
-        st.info("Select exchanges and a date range, then click **Fetch Data**.")
+    if "binance_df" not in st.session_state or "kraken_df" not in st.session_state:
+        st.info("Select a date range, then click **Fetch Data**.")
         st.stop()
 
-    # --- Validate timezone ---
-    try:
-        ZoneInfo(local_tz)
-    except (ZoneInfoNotFoundError, KeyError):
-        st.error(f"Unknown timezone: '{local_tz}'. Use an IANA name like 'America/Chicago'.")
-        st.stop()
-
-    # --- Load from session state ---
-    @st.cache_data
-    def prepare_df(df, tz):
-        # Data is already in the correct format from get_prices_for_day,
-        # but we still run it through detect_and_load for normalisation + tz handling
-        return detect_and_load(df, tz)
-
-    try:
-        df1 = prepare_df(st.session_state["df1"], local_tz)
-        df2 = prepare_df(st.session_state["df2"], local_tz)
-    except Exception as e:
-        st.error(f"Failed to prepare data: {e}")
-        st.stop()
-
-    # --- Everything below is unchanged from your original ---
-    merged, overlap_start, overlap_end = build_merged(df1, df2)
-
-    if merged.empty:
-        st.warning("No overlapping time range found between the two sources.")
-        st.stop()
-
-    merged["spread_pct"] = ((merged["price1"] - merged["price2"]) / merged["price2"] * 100).round(4)
-
-    hover_t, hover_v = decimate_spread(
-        merged["time"].tolist(),
-        merged["spread_pct"].tolist(),
-        n_buckets,
+    smoothed_df = smooth_binance_with_kraken(
+        st.session_state["binance_df"],
+        st.session_state["kraken_df"],
     )
 
-    segments = zero_crossing_segments(hover_t, hover_v)
+    if smoothed_df.empty:
+        st.warning("No data available for the selected range.")
+        st.stop()
 
-    max_diff_row = merged.loc[merged["spread_pct"].abs().idxmax()]
-    st.markdown(
-        f"**{len(merged):,}** data points &nbsp;|&nbsp; "
-        f"Max spread: **{max_diff_row['spread_pct']:+.4f}%** at `{max_diff_row['time'].strftime('%Y-%m-%d %H:%M:%S UTC')}`"
-        f" &nbsp;|&nbsp; Mean: **{merged['spread_pct'].mean():+.4f}%**"
-        f" &nbsp;|&nbsp; Std: **{merged['spread_pct'].std():.4f}%**"
-    )
-
-    fig = make_subplots(
-        rows=2, cols=1,
-        shared_xaxes=True,
-        row_heights=[0.65, 0.35],
-        vertical_spacing=0.06,
-        subplot_titles=("Price", "Spread (%)"),
-    )
-
+    fig = go.Figure()
     fig.add_trace(
         go.Scatter(
-            x=df1["time"], y=df1["price"],
-            name=file1_label,
+            x=smoothed_df["time"], y=smoothed_df["binance_price"],
+            name="Binance",
             line=dict(color="#4C9BE8", width=1.2, shape="hv"),
-            hovertemplate="%{x|%Y-%m-%d %H:%M:%S}<br>Price: %{y:.6f}<extra>" + file1_label + "</extra>",
-        ),
-        row=1, col=1
+            hovertemplate="%{x|%Y-%m-%d %H:%M:%S}<br>Price: %{y:.6f}<extra>Binance</extra>",
+        )
     )
     fig.add_trace(
         go.Scatter(
-            x=df2["time"], y=df2["price"],
-            name=file2_label,
+            x=smoothed_df["time"], y=smoothed_df["kraken_price"],
+            name="Kraken (interp)",
             line=dict(color="#F4A83A", width=1.2, dash="dot", shape="hv"),
-            hovertemplate="%{x|%Y-%m-%d %H:%M:%S}<br>Price: %{y:.6f}<extra>" + file2_label + "</extra>",
-        ),
-        row=1, col=1
+            hovertemplate="%{x|%Y-%m-%d %H:%M:%S}<br>Price: %{y:.6f}<extra>Kraken</extra>",
+        )
     )
-
     fig.add_trace(
         go.Scatter(
-            x=hover_t, y=hover_v,
-            name="Spread",
-            mode="lines",
-            line=dict(color="rgba(0,0,0,0)", width=0),
-            showlegend=False,
-            hovertemplate="%{x|%Y-%m-%d %H:%M:%S}<br>Spread: %{y:+.4f}%<extra></extra>",
-        ),
-        row=2, col=1
+            x=smoothed_df["time"], y=smoothed_df["smoothed_price"],
+            name="Combined",
+            line=dict(color="#2ECC71", width=1.6),
+            hovertemplate="%{x|%Y-%m-%d %H:%M:%S}<br>Price: %{y:.6f}<extra>Combined</extra>",
+        )
     )
-
-    shown_pos = shown_neg = False
-    for seg_t, seg_v, is_pos in segments:
-        color = "#2ECC71" if is_pos else "#E74C3C"
-        name  = "Spread (A > B)" if is_pos else "Spread (A < B)"
-        show  = (is_pos and not shown_pos) or (not is_pos and not shown_neg)
-        fig.add_trace(
-            go.Scatter(
-                x=seg_t, y=seg_v,
-                name=name,
-                mode="lines",
-                line=dict(color=color, width=1),
-                showlegend=show,
-                legendgroup=name,
-                hoverinfo="skip",
-            ),
-            row=2, col=1
-        )
-        if is_pos: shown_pos = True
-        else:      shown_neg = True
-
-    max_pos_idx = merged["spread_pct"].idxmax()
-    max_neg_idx = merged["spread_pct"].idxmin()
-    for idx, label_color in [(max_pos_idx, "#2ECC71"), (max_neg_idx, "#E74C3C")]:
-        row = merged.loc[idx]
-        fig.add_trace(
-            go.Scatter(
-                x=[row["time"]], y=[row["spread_pct"]],
-                mode="markers+text",
-                marker=dict(color=label_color, size=8, symbol="circle"),
-                text=[f"{row['spread_pct']:+.4f}%"],
-                textposition="top center" if row["spread_pct"] >= 0 else "bottom center",
-                textfont=dict(color=label_color, size=11),
-                showlegend=False,
-                hoverinfo="skip",
-            ),
-            row=2, col=1
-        )
 
     fig.update_layout(
-        height=700,
+        height=650,
         template="plotly_dark",
         hovermode="x unified",
-        legend=dict(orientation="h", y=1.04, x=0),
+        legend=dict(orientation="h", y=1.05, x=0),
         margin=dict(t=60, b=40, l=60, r=20),
     )
-    fig.update_yaxes(title_text="EUR/USD", row=1, col=1, tickformat=".5f")
-    fig.update_yaxes(title_text="Spread %", row=2, col=1, tickformat="+.4f%")
-    fig.update_xaxes(title_text="Time (UTC)", row=2, col=1)
+    fig.update_yaxes(title_text="EUR/USD", tickformat=".5f")
+    fig.update_xaxes(title_text="Time (UTC)")
 
     st.plotly_chart(fig, use_container_width=True)
 
-    with st.expander("View merged data table"):
-        display = merged.copy()
-        display["time"]       = display["time"].dt.strftime("%Y-%m-%d %H:%M:%S UTC")
-        display["price1"]     = display["price1"].map("{:.6f}".format)
-        display["price2"]     = display["price2"].map("{:.6f}".format)
-        display["spread_pct"] = display["spread_pct"].map("{:+.4f}%".format)
-        display.columns = ["Time (UTC)", file1_label, file2_label, "Spread %"]
+    with st.expander("View combined data table"):
+        display = smoothed_df[["time", "binance_price", "kraken_price", "smoothed_price"]].copy()
+        display["time"] = display["time"].dt.strftime("%Y-%m-%d %H:%M:%S UTC")
+        for col in ["binance_price", "kraken_price", "smoothed_price"]:
+            display[col] = display[col].map(lambda v: f"{v:.6f}" if pd.notna(v) else "")
+        display.columns = ["Time (UTC)", "Binance", "Kraken (interp)", "Combined"]
         st.dataframe(display, use_container_width=True, hide_index=True)
