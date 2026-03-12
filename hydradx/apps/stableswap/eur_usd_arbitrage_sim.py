@@ -733,6 +733,15 @@ def simulation_section() -> None:
 
     # Small preview panel that refreshes only when StableSwap settings change.
     preview_box = col_b.container()
+    preview_box.markdown(
+        """
+        <style>
+        div[data-testid="stTextInput"] { margin-top: -0.35rem; margin-bottom: -0.35rem; }
+        div[data-testid="stTextInput"] input { padding-top: 0.1rem; padding-bottom: 0.1rem; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
     preview_row = preview_box.columns([2, 1, 2, 2])
     preview_row[0].markdown("Price of a")
     usd_trade_size_raw = preview_row[1].text_input(
@@ -1046,7 +1055,7 @@ if st.runtime.exists():
     # ── Binance bias factor lives OUTSIDE the fragment because it affects the
     # price chart. Changing it redraws the chart and resets the simulation.
     binance_bias_slider = sidebar.slider(
-        "Binance vs Kraken bias",
+        "Binance vs Kraken price bias",
         min_value=-10.0, max_value=10.0,
         value=st.session_state.get("binance_bias_slider", 3.0),
         step=0.5,
