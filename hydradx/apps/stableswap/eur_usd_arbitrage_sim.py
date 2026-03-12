@@ -11,6 +11,8 @@ from io import StringIO
 
 import sys
 
+from sympy import false, true
+
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../"))
 sys.path.append(project_root)
 
@@ -334,6 +336,7 @@ def _load_prices(exchange: str, day_keys: tuple[str, ...]) -> pd.DataFrame:
         return pd.DataFrame()
     return pd.concat(frames, ignore_index=True)
 
+
 @st.cache_data(show_spinner=False)
 def load_prices_cached(exchange: str, day_keys: tuple[str, ...]) -> pd.DataFrame:
     return _load_prices(exchange, day_keys)
@@ -384,6 +387,23 @@ def _interp_prices(target_ms: np.ndarray, source_ms: np.ndarray, source_prices: 
     return interp
 
 
+def _step_prices(target_ms: np.ndarray, source_ms: np.ndarray, source_prices: np.ndarray) -> np.ndarray:
+    if len(source_ms) == 0:
+        return np.full_like(target_ms, np.nan, dtype=float)
+    if len(source_ms) == 1:
+        return np.full_like(target_ms, float(source_prices[0]), dtype=float)
+
+    order = np.argsort(source_ms)
+    src_ms = source_ms[order]
+    src_prices = source_prices[order]
+
+    idx = np.searchsorted(src_ms, target_ms, side="right") - 1
+    out = np.full_like(target_ms, np.nan, dtype=float)
+    valid = (idx >= 0) & (idx < len(src_prices))
+    out[valid] = src_prices[idx[valid]]
+    return out
+
+
 def build_simulation_points(
     combined_df: pd.DataFrame,
     dia_df: pd.DataFrame,
@@ -417,11 +437,19 @@ def build_simulation_points(
     if dia_df.empty:
         dia_interp = np.full_like(combined_interp, np.nan, dtype=float)
     else:
-        dia_interp = _interp_prices(
-            grid_ms,
-            dia_df["timestamp_ms"].to_numpy(dtype=np.int64),
-            dia_df["price"].to_numpy(dtype=float),
-        )
+        dia_interpolated = false
+        if dia_interpolated:
+            dia_interp = _interp_prices(
+                grid_ms,
+                dia_df["timestamp_ms"].to_numpy(dtype=np.int64),
+                dia_df["price"].to_numpy(dtype=float),
+            )
+        else:
+            dia_interp = _step_prices(
+                grid_ms,
+                dia_df["timestamp_ms"].to_numpy(dtype=np.int64),
+                dia_df["price"].to_numpy(dtype=float),
+            )
 
     return [
         {
@@ -437,8 +465,9 @@ def build_simulation_points(
 def run_sim(
         steps: list[dict[str, float]],
         trade_fee: float=0.0,
-        amplification: float=100.0
-) -> dict[datetime, float]:
+        amplification: float=100.0,
+        return_series: bool=False,
+) -> dict[datetime, float] | tuple[dict[datetime, float], pd.DataFrame]:
     dia_start_peg = steps[0]["dia_price"]
     eur_usd_stablepool = StableSwapPoolState(
         tokens={"USD": 1_000_000 * dia_start_peg, "EUR": 1_000_000},
@@ -446,83 +475,135 @@ def run_sim(
         trade_fee=trade_fee,
         peg=dia_start_peg,
         spot_price_precision=0.00000000001,
-        precision=1e-12
+        precision=1e-12,
+        max_peg_update=0.0001
     )
     binance = FixedPriceExchange(
         tokens={"EUR": steps[0]["external_price"], "USD": 1.0},
     )
     profit_over_time = {}
+    series_times: list[datetime] = []
+    series_external: list[float] = []
+    series_dia: list[float] = []
+    series_stableswap: list[float] = []
+    series_peg: list[float] = []
+    series_peg_target: list[float] = []
+    last_hour_logged: datetime | None = None
     arbitrageur = Agent()
+    trader = Agent()
     for i, step in enumerate(steps):
         next_peg = step["dia_price"]
         eur_usd_stablepool.set_peg_target(next_peg)
         eur_usd_stablepool.update()
         binance.prices = {"EUR": step["external_price"], "USD": 1.0}
+
+        # do one random $1 trade to update the price and trigger peg adjustments if needed
+        buy_or_sell = "buy" if step["external_price"] > step["dia_price"] else "sell"
+        eur_usd_stablepool.swap(
+            agent=trader,
+            tkn_sell="USD" if buy_or_sell == "buy" else "EUR",
+            tkn_buy="EUR" if buy_or_sell == "buy" else "USD",
+            sell_quantity=0.00001
+        )
+
+        stableswap_price_before = float(eur_usd_stablepool.price("EUR", "USD"))
+        hour_key = step["time"].replace(minute=0, second=0, microsecond=0)
+        if last_hour_logged is None or hour_key > last_hour_logged:
+            last_hour_logged = hour_key
+            print(
+                f"[hourly] {hour_key.isoformat()} "
+                f"ext={step['external_price']:.6f} "
+                f"dia={step['dia_price']:.6f} "
+                f"stableswap={stableswap_price_before:.6f}"
+            )
+
         max_arb_size = 2 ** 10
         arb_size = max_arb_size / 2
         max_iterations = 10
         spread = abs(1 - step['external_price'] / step['dia_price'])
-        if spread < eur_usd_stablepool.trade_fee:
-            continue
-        buy_or_sell = "buy" if step["external_price"] > eur_usd_stablepool.price("EUR", "USD") else "sell"
-        best = None
-        for j in range(2, max_iterations + 2):
-            delta = max_arb_size / (2 ** j)
-            try_arbs = [arb_size - delta, arb_size + delta]
-            trade_opts = [
-                {
-                    "usd": -try_arb if buy_or_sell == "buy" else try_arb,
-                    "eur": eur_usd_stablepool.calculate_buy_from_sell(
-                            tkn_buy="EUR", tkn_sell="USD", sell_quantity=try_arb
-                        ) if buy_or_sell == "buy" else -eur_usd_stablepool.calculate_sell_from_buy(
-                            tkn_sell="EUR", tkn_buy="USD", buy_quantity=try_arb
-                    )} for try_arb in try_arbs
-            ]
-            if best:
-                trade_opts.append(best)
-            results = [
-                {
-                    "usd": trade["usd"],
-                    "eur": trade["eur"],
-                    "profit": step["external_price"] * trade["eur"] + trade["usd"]
-                } for trade in trade_opts
-            ]
-            best = max(results, key=lambda item: item["profit"])
-            arb_size = abs(best['usd'])
-        if best["profit"] > 0.1:
-            start_usd = arbitrageur.get_holdings('USD')
-            if buy_or_sell == "buy":
-                eur_usd_stablepool.swap(
-                    agent=arbitrageur,
-                    tkn_sell="USD",
-                    tkn_buy="EUR",
-                    sell_quantity=arb_size
+        if spread >= eur_usd_stablepool.trade_fee:
+            buy_or_sell = "buy" if step["external_price"] > eur_usd_stablepool.price("EUR", "USD") else "sell"
+            best = None
+            for j in range(2, max_iterations + 2):
+                delta = max_arb_size / (2 ** j)
+                try_arbs = [arb_size - delta, arb_size + delta]
+                trade_opts = [
+                    {
+                        "usd": -try_arb if buy_or_sell == "buy" else try_arb,
+                        "eur": eur_usd_stablepool.calculate_buy_from_sell(
+                                tkn_buy="EUR", tkn_sell="USD", sell_quantity=try_arb
+                            ) if buy_or_sell == "buy" else -eur_usd_stablepool.calculate_sell_from_buy(
+                                tkn_sell="EUR", tkn_buy="USD", buy_quantity=try_arb
+                        )} for try_arb in try_arbs
+                ]
+                if best:
+                    trade_opts.append(best)
+                results = [
+                    {
+                        "usd": trade["usd"],
+                        "eur": trade["eur"],
+                        "profit": step["external_price"] * trade["eur"] + trade["usd"]
+                    } for trade in trade_opts
+                ]
+                best = max(results, key=lambda item: item["profit"])
+                arb_size = abs(best['usd'])
+            if best["profit"] > 0.1:
+                start_usd = arbitrageur.get_holdings('USD')
+                if buy_or_sell == "buy":
+                    eur_usd_stablepool.swap(
+                        agent=arbitrageur,
+                        tkn_sell="USD",
+                        tkn_buy="EUR",
+                        sell_quantity=arb_size
+                    )
+                    if abs(arbitrageur.get_holdings('EUR') - best['eur']) > 0.00001:
+                        print("arbitrage calculation is off")
+                    binance.swap(
+                        arbitrageur, tkn_sell='EUR', tkn_buy='USD', sell_quantity=arbitrageur.holdings['EUR']
+                    )
+                else:
+                    eur_usd_stablepool.swap(
+                        agent=arbitrageur,
+                        tkn_sell="EUR",
+                        tkn_buy="USD",
+                        buy_quantity=arb_size
+                    )
+                    if (abs(arbitrageur.get_holdings('EUR') - best['eur']) > 0.00001):
+                        print("arbitrage calculation is off")
+                    binance.swap(
+                        arbitrageur, tkn_buy='EUR', tkn_sell='USD', buy_quantity=-arbitrageur.holdings['EUR']
+                    )
+                profit = arbitrageur.get_holdings('USD') - start_usd
+                profit_over_time[datetime.fromtimestamp(step["timestamp_ms"] / 1000, tz=timezone.utc)] = profit
+                stableswap_price_after = float(eur_usd_stablepool.price("EUR", "USD"))
+                print(
+                    f"[arb] {step['time'].isoformat()} "
+                    f"ext={step['external_price']:.6f} "
+                    f"dia={step['dia_price']:.6f} "
+                    f"stableswap_before={stableswap_price_before:.6f} "
+                    f"arb_usd={arb_size:.6f} "
+                    f"stableswap_after={stableswap_price_after:.6f}"
                 )
-                if abs(arbitrageur.get_holdings('EUR') - best['eur']) > 0.00001:
-                    print("arbitrage calculation is off")
-                binance.swap(
-                    arbitrageur, tkn_sell='EUR', tkn_buy='USD', sell_quantity=arbitrageur.holdings['EUR']
-                )
-            else:
-                eur_usd_stablepool.swap(
-                    agent=arbitrageur,
-                    tkn_sell="EUR",
-                    tkn_buy="USD",
-                    buy_quantity=arb_size
-                )
-                if (abs(arbitrageur.get_holdings('EUR') - best['eur']) > 0.00001):
-                    print("arbitrage calculation is off")
-                binance.swap(
-                    arbitrageur, tkn_buy='EUR', tkn_sell='USD', buy_quantity=-arbitrageur.holdings['EUR']
-                )
-            profit = arbitrageur.get_holdings('USD') - start_usd
-            profit_over_time[datetime.fromtimestamp(step["timestamp_ms"] / 1000)] = profit
-            if profit < 0:
-                raise ValueError("arbitrage messed up")
-        else:
-            continue
+                if profit < 0:
+                    raise ValueError("arbitrage messed up")
 
-    profit = arbitrageur.get_holdings('USD')
+        series_times.append(step["time"])
+        series_external.append(float(step["external_price"]))
+        series_dia.append(float(step["dia_price"]))
+        series_stableswap.append(float(eur_usd_stablepool.price("EUR", "USD")))
+        series_peg.append(float(eur_usd_stablepool.peg[1]))
+        series_peg_target.append(float(eur_usd_stablepool.peg_target[1]))
+
+    if return_series:
+        series_df = pd.DataFrame({
+            "time": series_times,
+            "external_price": series_external,
+            "dia_price": series_dia,
+            "stableswap_price": series_stableswap,
+            "stableswap_peg": series_peg,
+            "stableswap_peg_target": series_peg_target,
+        })
+        return profit_over_time, series_df
     return profit_over_time
 
 
@@ -572,6 +653,295 @@ def smooth_binance_with_kraken(
     })
     return out
 
+
+def _downsample_for_plot(df: pd.DataFrame, max_points: int) -> pd.DataFrame:
+    if df.empty or len(df) <= max_points:
+        return df
+    step = int(np.ceil(len(df) / max_points))
+    return df.iloc[::step].copy()
+
+
+def _pad_series_to_range(df: pd.DataFrame, start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:
+    if df.empty:
+        return df
+    series = df.sort_values("time").copy()
+    series["time"] = pd.to_datetime(series["time"], utc=True)
+    start = pd.Timestamp(start)
+    end = pd.Timestamp(end)
+    if start.tzinfo is None:
+        start = start.tz_localize("UTC")
+    else:
+        start = start.tz_convert("UTC")
+    if end.tzinfo is None:
+        end = end.tz_localize("UTC")
+    else:
+        end = end.tz_convert("UTC")
+
+    in_range = series[(series["time"] >= start) & (series["time"] <= end)].copy()
+    before_start = series[series["time"] < start].tail(1)
+    after_end = series[series["time"] > end].head(1)
+
+    pieces = []
+    if not before_start.empty:
+        start_row = before_start.copy()
+        start_row["time"] = start
+        start_row["timestamp_ms"] = int(start.value // 1_000_000)
+        pieces.append(start_row)
+
+    if not in_range.empty:
+        pieces.append(in_range)
+
+    if not after_end.empty:
+        end_row = after_end.copy()
+        end_row["time"] = end
+        end_row["timestamp_ms"] = int(end.value // 1_000_000)
+        pieces.append(end_row)
+
+    if not pieces:
+        return in_range
+
+    window = pd.concat(pieces, ignore_index=True)
+    return window.drop_duplicates(subset=["time"]).sort_values("time")
+
+
+# =============================================================================
+# STREAMLIT FRAGMENT
+# =============================================================================
+@st.fragment
+def simulation_section() -> None:
+    combined_df = st.session_state.get("combined_df", pd.DataFrame())
+    dia_df = st.session_state.get("dia_df", pd.DataFrame())
+
+    if combined_df.empty or dia_df.empty:
+        st.info("Configure the parameters in the sidebar, then click **Run simulation**.")
+        return
+
+    # Sim controls live in the main body, not the sidebar
+    col_a, col_b = st.columns(2)
+    pool_amplification = col_a.slider(
+        "StableSwap amplification factor",
+        min_value=10, max_value=500,
+        value=st.session_state.get("pool_amplification", 100),
+        step=10, key="pool_amplification",
+    )
+    trade_fee = col_b.slider(
+        "StableSwap trade fee",
+        min_value=0.0, max_value=0.001,
+        value=st.session_state.get("trade_fee", 0.0005),
+        step=0.0001, key="trade_fee", format="%0.4f"
+    )
+
+    # Small preview panel that refreshes only when StableSwap settings change.
+    preview_box = col_b.container()
+    preview_row = preview_box.columns([2, 1, 2, 2])
+    preview_row[0].markdown("Price of a")
+    usd_trade_size_raw = preview_row[1].text_input(
+        "USD trade size",
+        value=st.session_state.get("preview_usd_trade_size", "10000"),
+        key="preview_usd_trade_size",
+        label_visibility="collapsed",
+    )
+    preview_row[2].markdown("USD trade:")
+    preview_value_slot = preview_row[3].empty()
+    try:
+        usd_trade_size = float(usd_trade_size_raw)
+    except (TypeError, ValueError):
+        usd_trade_size = None
+
+    preview_key = (
+        pool_amplification,
+        trade_fee,
+        st.session_state.get("pool_depth", 2_000_000),
+        usd_trade_size,
+    )
+    preview_data_key = st.session_state.get("day_keys")
+    preview_needs_update = (
+        st.session_state.get("preview_key") != preview_key
+        or st.session_state.get("preview_data_key") != preview_data_key
+        or st.session_state.get("preview_result") is None
+    )
+
+    if preview_needs_update and usd_trade_size is not None and not combined_df.empty and not dia_df.empty:
+        with preview_box:
+            with st.spinner("Updating preview..."):
+                combined_small = combined_df[["time", "external_price"]].dropna().sort_values("time")
+                dia_small = dia_df[["time", "price"]].dropna().sort_values("time")
+
+                preview_start = max(combined_small["time"].min(), dia_small["time"].min())
+                dia_overlap = dia_small[dia_small["time"] >= preview_start]
+                if dia_overlap.empty:
+                    preview_payload = None
+                else:
+                    dia_price = float(dia_overlap["price"].iloc[0])
+                    eur_usd_stableswap = StableSwapPoolState(
+                        tokens={"USD": 1_000_000 * dia_price, "EUR": 1_000_000},
+                        amplification=pool_amplification,
+                        trade_fee=trade_fee,
+                        peg=dia_price,
+                        spot_price_precision=0.00000000001,
+                        precision=1e-12,
+                        max_peg_update=0.0001,
+                    )
+                    pool_after = eur_usd_stableswap.copy()
+                    pool_after.swap(
+                        agent=Agent(),
+                        tkn_buy="EUR",
+                        tkn_sell="USD",
+                        sell_quantity=usd_trade_size,
+                    )
+                    eur_received = (
+                        eur_usd_stableswap.liquidity["EUR"]
+                        - pool_after.liquidity["EUR"]
+                    )
+                    trade_value = eur_received * dia_price
+                    cost = usd_trade_size - trade_value
+                    preview_payload = {
+                        "cost": float(cost),
+                        "dia_price": dia_price,
+                        "trade_size": usd_trade_size,
+                    }
+
+                st.session_state["preview_key"] = preview_key
+                st.session_state["preview_data_key"] = preview_data_key
+                st.session_state["preview_result"] = preview_payload
+
+    preview_payload = st.session_state.get("preview_result") if usd_trade_size is not None else None
+    if preview_payload is None:
+        preview_value_slot.markdown("—")
+    else:
+        preview_value_slot.markdown(f"${preview_payload['cost']:,.6f} ({(preview_payload['cost'] / preview_payload['trade_size']):,.4f}%)")
+
+    pool_depth = col_a.slider(
+        "StableSwap total liquidity (USD)",
+        min_value=100_000, max_value=10_000_000,
+        value=st.session_state.get("pool_depth", 2_000_000),
+        step=100_000, key="pool_depth"
+    )
+    run_sim_clicked = st.button("Run simulation", type="primary")
+
+    # Invalidate results when sim params change
+    sim_param_key = (pool_amplification, trade_fee)
+    if st.session_state.get("sim_param_key") != sim_param_key:
+        st.session_state["sim_param_key"] = sim_param_key
+        st.session_state["simulation_ran"] = False
+        st.session_state["simulation_results"] = None
+
+    if run_sim_clicked:
+        simulation_points = build_simulation_points(combined_df, dia_df, step_seconds=6)
+        if not simulation_points:
+            st.warning("Could not build simulation points — check that price and DIA data overlap in time.")
+        else:
+            st.session_state["simulation_start_time"] = simulation_points[0]["time"]
+            st.session_state["simulation_end_time"] = simulation_points[-1]["time"]
+            with st.spinner("Running simulation..."):
+                sim_results, sim_series = run_sim(
+                    steps=simulation_points,
+                    trade_fee=trade_fee,
+                    amplification=pool_amplification,
+                    return_series=True,
+                )
+            st.session_state["simulation_results"] = sim_results
+            st.session_state["simulation_series"] = sim_series
+            st.session_state["simulation_ran"] = True
+
+    if not st.session_state.get("simulation_ran"):
+        st.info("Configure the parameters in the sidebar, then click **Run simulation**.")
+    else:
+        sim_results = st.session_state.get("simulation_results") or {}
+        sim_start = st.session_state.get("simulation_start_time")
+        sim_end = st.session_state.get("simulation_end_time")
+        if not sim_results:
+            if sim_start is None or sim_end is None:
+                st.info("Simulation completed, but no profitable arbitrage events were found.")
+                return
+            profit_df = pd.DataFrame({"time": [sim_start, sim_end], "profit": [0.0, 0.0]})
+        else:
+            profit_df = (
+                pd.DataFrame(
+                    {"time": list(sim_results.keys()), "profit": list(sim_results.values())}
+                )
+                .sort_values("time")
+            )
+            if sim_start is not None and (profit_df.empty or sim_start < profit_df["time"].iloc[0]):
+                start_sentinel = pd.DataFrame({"time": [sim_start], "profit": [0.0]})
+                profit_df = pd.concat([start_sentinel, profit_df], ignore_index=True)
+            if sim_end is not None and (profit_df.empty or sim_end > profit_df["time"].iloc[-1]):
+                end_sentinel = pd.DataFrame({"time": [sim_end], "profit": [0.0]})
+                profit_df = pd.concat([profit_df, end_sentinel], ignore_index=True)
+
+        profit_df["cumulative_profit"] = profit_df["profit"].cumsum()
+
+        total = profit_df["cumulative_profit"].iloc[-1]
+        n_events = len(sim_results)
+        col1, col2 = st.columns(2)
+        col1.metric("Total arbitrage profit (USD)", f"${total:,.4f}")
+        col2.metric("Arbitrage events", f"{n_events:,}")
+
+        profit_fig = go.Figure()
+        profit_fig.add_trace(
+            go.Scatter(
+                x=profit_df["time"],
+                y=profit_df["cumulative_profit"],
+                name="Arbitrageur profit (cumulative)",
+                line=dict(color="#00B3FF", width=2.0),
+                hovertemplate="%{x|%Y-%m-%d %H:%M:%S}<br>Total Profit: %{y:.4f}<extra></extra>",
+            )
+        )
+        profit_fig.update_layout(
+            height=500, template="plotly_dark", hovermode="x unified",
+            margin=dict(t=40, b=40, l=60, r=20),
+        )
+        profit_fig.update_yaxes(title_text="USD Profit (Cumulative)", tickformat=".2f")
+        profit_fig.update_xaxes(title_text="Time (UTC)")
+        st.plotly_chart(profit_fig, use_container_width=True)
+
+        series_df = st.session_state.get("simulation_series")
+        if isinstance(series_df, pd.DataFrame) and not series_df.empty:
+            st.subheader("Spread between price sources")
+            series_map = {
+                "DIA oracle price": "dia_price",
+                "Binance/combined price": "external_price",
+                "StableSwap price": "stableswap_price",
+                "StableSwap peg": "stableswap_peg",
+                "StableSwap peg target": "stableswap_peg_target",
+            }
+            left_col, right_col = st.columns(2)
+            left_label = left_col.selectbox(
+                "Series A",
+                list(series_map.keys()),
+                index=0,
+                key="spread_series_a",
+            )
+            right_options = [k for k in series_map.keys() if k != left_label]
+            right_label = right_col.selectbox(
+                "Series B",
+                right_options,
+                index=0,
+                key="spread_series_b",
+            )
+
+            spread_df = series_df[["time", series_map[left_label], series_map[right_label]]].dropna()
+            spread_df["spread"] = spread_df[series_map[left_label]] - spread_df[series_map[right_label]]
+
+            spread_fig = go.Figure()
+            spread_fig.add_trace(
+                go.Scatter(
+                    x=spread_df["time"],
+                    y=spread_df["spread"],
+                    name="Spread",
+                    line=dict(color="#FF8C00", width=1.8),
+                    hovertemplate="%{x|%Y-%m-%d %H:%M:%S}<br>Spread: %{y:.6f}<extra></extra>",
+                )
+            )
+            spread_fig.update_layout(
+                height=420, template="plotly_dark", hovermode="x unified",
+                margin=dict(t=40, b=40, l=60, r=20),
+            )
+            spread_fig.update_yaxes(title_text="Price Spread", tickformat=".6f")
+            spread_fig.update_xaxes(title_text="Time (UTC)")
+            st.plotly_chart(spread_fig, use_container_width=True)
+        else:
+            st.info("Run the simulation to view the spread chart.")
 
 # =============================================================================
 # STREAMLIT UI
@@ -635,9 +1005,6 @@ if st.runtime.exists():
         dia_range = None
         if not dia_df.empty:
             dia_range = (dia_df["time"].min(), dia_df["time"].max())
-            start_dt = pd.Timestamp(start_day, tz="UTC")
-            end_dt = pd.Timestamp(end_day + timedelta(days=1), tz="UTC")
-            dia_df = dia_df[(dia_df["time"] >= start_dt) & (dia_df["time"] < end_dt)]
 
         st.session_state["dia_range"] = dia_range
         st.session_state["day_keys"] = day_keys
@@ -666,30 +1033,62 @@ if st.runtime.exists():
             st.warning("No DIA oracle data available. Simulation requires DIA data.")
         st.stop()
 
-    binance_bias_factor = sidebar.slider(
-        "Binance bias factor",
-        min_value=1.0, max_value=10.0,
-        value=st.session_state.get("binance_bias_factor", 3.0),
-        step=0.1,
-        help="How closely the simulation price tracks Binance as opposed to Kraken.",
-        key="binance_bias_factor",
-    )
-    pool_amplification = sidebar.slider(
-        "StableSwap amplification factor",
-        min_value=10, max_value=500,
-        value=st.session_state.get("pool_amplification", 100),
-        step=10, key="pool_amplification",
-    )
-    trade_fee = sidebar.slider(
-        "StableSwap trade fee",
-        min_value=0.0, max_value=0.001,
-        value=st.session_state.get("trade_fee", 0.0005),
-        step=0.0001, key="trade_fee", format="%.4f",
+    if dia_range is not None:
+        chart_start = pd.Timestamp(start_day, tz="UTC")
+        chart_end = pd.Timestamp(end_day + timedelta(days=1), tz="UTC")
+        if chart_start < dia_range[0] or chart_end > dia_range[1]:
+            st.warning(
+                "Selected range exceeds available DIA data. Available DIA range: "
+                f"{dia_range[0].strftime('%Y-%m-%d %H:%M:%S UTC')} to "
+                f"{dia_range[1].strftime('%Y-%m-%d %H:%M:%S UTC')}."
+            )
+
+    # ── Binance bias factor lives OUTSIDE the fragment because it affects the
+    # price chart. Changing it redraws the chart and resets the simulation.
+    binance_bias_slider = sidebar.slider(
+        "Binance vs Kraken bias",
+        min_value=-10.0, max_value=10.0,
+        value=st.session_state.get("binance_bias_slider", 3.0),
+        step=0.5,
+        format=" ",
+        help=(
+            "0 is neutral (snaps within ±0.2). Nonzero values shift by ±1 internally "
+            "to avoid the -1..1 zone; positive biases Binance, negative biases Kraken."
+        ),
+        key="binance_bias_slider",
     )
 
-    run_sim_clicked = sidebar.button("Run simulation", type="primary")
+    label_cols = sidebar.columns(3)
+    label_cols[0].markdown("Kraken", unsafe_allow_html=True)
+    label_cols[1].markdown(
+        f"<div style='text-align: center;'>{binance_bias_slider:+.1f}</div>",
+        unsafe_allow_html=True,
+    )
+    label_cols[2].markdown("<div style='text-align: right;'>Binance</div>", unsafe_allow_html=True)
+
+    if abs(binance_bias_slider) < 0.2:
+        effective_slider = 0.0
+    else:
+        effective_slider = binance_bias_slider + (1.0 if binance_bias_slider > 0 else -1.0)
+
+    if effective_slider == 0.0:
+        binance_bias_factor = 1.0
+    elif effective_slider > 0:
+        binance_bias_factor = effective_slider
+    else:
+        binance_bias_factor = 1.0 / abs(effective_slider)
 
     combined_df = smooth_binance_with_kraken(binance_df, kraken_df, binance_bias_factor)
+    st.session_state["combined_df"] = combined_df
+    st.session_state["dia_df"] = dia_df
+    if not combined_df.empty:
+        st.session_state["simulation_start_time"] = combined_df["time"].min()
+        st.session_state["simulation_end_time"] = combined_df["time"].max()
+
+    if st.session_state.get("combined_df_hash") != binance_bias_slider:
+        st.session_state["combined_df_hash"] = binance_bias_slider
+        st.session_state["simulation_ran"] = False
+        st.session_state["simulation_results"] = None
 
     if not combined_df.empty:
         dia_norm = _to_price_df(dia_df) if not dia_df.empty else pd.DataFrame(columns=["timestamp_ms", "time", "price"])
@@ -700,28 +1099,37 @@ if st.runtime.exists():
         show_combined = toggle_cols[2].checkbox("Combined", value=True, key="show_combined")
         show_dia      = toggle_cols[3].checkbox("DIA",      value=True, key="show_dia")
 
+        # Limit plot points to keep redraws responsive.
+        max_plot_points = 1200
+        plot_combined = _downsample_for_plot(combined_df, max_plot_points)
+        if not dia_norm.empty:
+            plot_start = combined_df["time"].min()
+            plot_end = combined_df["time"].max()
+            dia_norm = _pad_series_to_range(dia_norm, plot_start, plot_end)
+        plot_dia = _downsample_for_plot(dia_norm, max_plot_points)
+
         fig = go.Figure()
         if show_binance:
             fig.add_trace(go.Scatter(
-                x=combined_df["time"], y=combined_df["binance_price"],
+                x=plot_combined["time"], y=plot_combined["binance_price"],
                 name="Binance", line=dict(color="#58D68D", width=1.2),
                 hovertemplate="%{x|%Y-%m-%d %H:%M:%S}<br>Price: %{y:.6f}<extra>Binance</extra>",
             ))
         if show_kraken:
             fig.add_trace(go.Scatter(
-                x=combined_df["time"], y=combined_df["kraken_price"],
+                x=plot_combined["time"], y=plot_combined["kraken_price"],
                 name="Kraken (interp)", line=dict(color="#F4D03F", width=1.2, dash="dash"),
                 hovertemplate="%{x|%Y-%m-%d %H:%M:%S}<br>Price: %{y:.6f}<extra>Kraken</extra>",
             ))
         if show_combined:
             fig.add_trace(go.Scatter(
-                x=combined_df["time"], y=combined_df["external_price"],
+                x=plot_combined["time"], y=plot_combined["external_price"],
                 name="combined", line=dict(color="#E74C3C", width=1.6),
                 hovertemplate="%{x|%Y-%m-%d %H:%M:%S}<br>Price: %{y:.6f}<extra>combined</extra>",
             ))
-        if show_dia and not dia_norm.empty:
+        if show_dia and not plot_dia.empty:
             fig.add_trace(go.Scatter(
-                x=dia_norm["time"], y=dia_norm["price"],
+                x=plot_dia["time"], y=plot_dia["price"],
                 name="DIA", line=dict(color="#B86BFF", width=1.4, dash="dot", shape="hv"),
                 hovertemplate="%{x|%Y-%m-%d %H:%M:%S}<br>Price: %{y:.6f}<extra>DIA</extra>",
             ))
@@ -735,70 +1143,7 @@ if st.runtime.exists():
         st.plotly_chart(fig, use_container_width=True)
         st.divider()
 
-    sim_param_key = (binance_bias_factor, pool_amplification, trade_fee)
-    if st.session_state.get("sim_param_key") != sim_param_key:
-        st.session_state["sim_param_key"] = sim_param_key
-        st.session_state["simulation_ran"] = False
-        st.session_state["simulation_results"] = None
-
-    if run_sim_clicked:
-        simulation_points = build_simulation_points(combined_df, dia_df, step_seconds=6)
-
-        if not simulation_points:
-            st.warning("Could not build simulation points — check that price and DIA data overlap in time.")
-        else:
-            with st.spinner("Running simulation..."):
-                sim_results = run_sim(
-                    steps=simulation_points,
-                    trade_fee=trade_fee,
-                    amplification=pool_amplification,
-                )
-            st.session_state["simulation_results"] = sim_results
-            st.session_state["simulation_ran"] = True
-
-    if not st.session_state.get("simulation_ran"):
-        st.info("Configure the parameters in the sidebar, then click **Run simulation**.")
-    else:
-        sim_results = st.session_state.get("simulation_results") or {}
-        if not sim_results:
-            st.info("Simulation completed, but no profitable arbitrage events were found.")
-        else:
-            profit_df = (
-                pd.DataFrame(
-                    {"time": list(sim_results.keys()), "profit": list(sim_results.values())}
-                )
-                .sort_values("time")
-            )
-            sim_end = st.session_state.get("simulation_end_time")
-            if sim_end is not None and (profit_df.empty or sim_end > profit_df["time"].iloc[-1]):
-                sentinel = pd.DataFrame({"time": [sim_end], "profit": [0.0]})
-                profit_df = pd.concat([profit_df, sentinel], ignore_index=True)
-            profit_df["cumulative_profit"] = profit_df["profit"].cumsum()
-
-            total = profit_df["cumulative_profit"].iloc[-1]
-            n_events = len(profit_df)
-            col1, col2 = st.columns(2)
-            col1.metric("Total arbitrage profit (USD)", f"${total:,.4f}")
-            col2.metric("Arbitrage events", f"{n_events:,}")
-
-            profit_fig = go.Figure()
-            profit_fig.add_trace(
-                go.Scatter(
-                    x=profit_df["time"],
-                    y=profit_df["cumulative_profit"],
-                    name="Arbitrageur profit (cumulative)",
-                    line=dict(color="#00B3FF", width=2.0),
-                    hovertemplate="%{x|%Y-%m-%d %H:%M:%S}<br>Total Profit: %{y:.4f}<extra></extra>",
-                )
-            )
-            profit_fig.update_layout(
-                height=500, template="plotly_dark", hovermode="x unified",
-                margin=dict(t=40, b=40, l=60, r=20),
-            )
-            profit_fig.update_yaxes(title_text="USD Profit (Cumulative)", tickformat=".4f")
-            profit_fig.update_xaxes(title_text="Time (UTC)")
-            st.plotly_chart(profit_fig, use_container_width=True)
-
+    simulation_section()
 
 # =============================================================================
 # CLI DEMO
