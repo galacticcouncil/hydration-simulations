@@ -5,12 +5,12 @@ class Agent:
     unique_id: str = ''
 
     def __init__(self,
-                 holdings: dict[str: float] = None,
-                 share_prices: dict[str: float] = None,
-                 delta_r: dict[str: float] = None,
+                 holdings: dict[str, float] = None,
+                 share_prices: dict[str, float] = None,
+                 delta_r: dict[str, float] = None,
                  trade_strategy: any = None,
                  unique_id: str = 'agent',
-                 nfts: dict[str: any] = None,
+                 nfts: dict[str, any] = None,
                  enforce_holdings: bool = None,
                  immune_to_fees: bool = False
                  ):
