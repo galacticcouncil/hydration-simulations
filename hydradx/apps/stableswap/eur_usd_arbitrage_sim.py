@@ -466,11 +466,12 @@ def run_sim(
         steps: list[dict[str, float]],
         trade_fee: float=0.0,
         amplification: float=100.0,
+        pool_depth: float=2_000_000.0,
         return_series: bool=False,
 ) -> dict[datetime, float] | tuple[dict[datetime, float], pd.DataFrame]:
     dia_start_peg = steps[0]["dia_price"]
     eur_usd_stablepool = StableSwapPoolState(
-        tokens={"USD": 1_000_000 * dia_start_peg, "EUR": 1_000_000},
+        tokens={"USD": pool_depth / 2, "EUR": pool_depth / 2 / dia_start_peg},
         amplification=amplification,
         trade_fee=trade_fee,
         peg=dia_start_peg,
@@ -730,6 +731,12 @@ def simulation_section() -> None:
         value=st.session_state.get("trade_fee", 0.0005),
         step=0.0001, key="trade_fee", format="%0.4f"
     )
+    pool_depth = col_a.slider(
+        "StableSwap total liquidity (USD)",
+        min_value=100_000, max_value=10_000_000,
+        value=st.session_state.get("pool_depth", 2_000_000),
+        step=100_000, key="pool_depth"
+    )
 
     # Small preview panel that refreshes only when StableSwap settings change.
     preview_box = col_b.container()
@@ -783,7 +790,7 @@ def simulation_section() -> None:
                 else:
                     dia_price = float(dia_overlap["price"].iloc[0])
                     eur_usd_stableswap = StableSwapPoolState(
-                        tokens={"USD": 1_000_000 * dia_price, "EUR": 1_000_000},
+                        tokens={"USD": pool_depth / 2, "EUR": pool_depth / 2 / dia_price},
                         amplification=pool_amplification,
                         trade_fee=trade_fee,
                         peg=dia_price,
@@ -820,12 +827,6 @@ def simulation_section() -> None:
     else:
         preview_value_slot.markdown(f"${preview_payload['cost']:,.6f} ({(preview_payload['cost'] / preview_payload['trade_size']):,.4f}%)")
 
-    pool_depth = col_a.slider(
-        "StableSwap total liquidity (USD)",
-        min_value=100_000, max_value=10_000_000,
-        value=st.session_state.get("pool_depth", 2_000_000),
-        step=100_000, key="pool_depth"
-    )
     run_sim_clicked = st.button("Run simulation", type="primary")
 
     # Invalidate results when sim params change
@@ -847,6 +848,7 @@ def simulation_section() -> None:
                     steps=simulation_points,
                     trade_fee=trade_fee,
                     amplification=pool_amplification,
+                    pool_depth=pool_depth,
                     return_series=True,
                 )
             st.session_state["simulation_results"] = sim_results
