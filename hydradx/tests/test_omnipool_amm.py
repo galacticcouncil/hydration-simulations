@@ -1951,7 +1951,7 @@ def test_lowering_price(lp_multiplier, price_movement, oracle_mult):
         },
         withdrawal_fee=True,
         min_withdrawal_fee=0.0001,
-        slip_factor=None
+        slip_factor=1
     )
 
     market_prices = {tkn: omnipool.usd_price(tkn) for tkn in omnipool.asset_list}
@@ -2000,9 +2000,11 @@ def test_lowering_price(lp_multiplier, price_movement, oracle_mult):
     if profit > 0:
         cash_out_state = remove_state.copy()
         cash_out_agent = remove_agent.copy()
-        for tkn in omnipool.asset_list:
+        for tkn in omnipool.liquidity:
             if cash_out_agent.get_holdings(tkn) < 0:
                 cash_out_state.swap(cash_out_agent, tkn_buy=tkn, tkn_sell='LRNA', buy_quantity=-cash_out_agent.holdings[tkn])
+            elif cash_out_agent.get_holdings(tkn) > 0:
+                cash_out_state.swap(cash_out_agent, tkn_sell=tkn, tkn_buy='LRNA', sell_quantity=cash_out_agent.holdings[tkn])
         raise
 
 
@@ -3198,15 +3200,18 @@ def test_no_slip_fee():
         lrna_fee_burn=0.0,
         lrna_mint_pct=0,
     )
+    initial_omnipool = omnipool.copy()
     omnipool.max_lrna_fee = 0.01
     buy_quantity = mpf(1000)
     outputs = omnipool.calculate_in_given_out(tkn_buy='HDX', tkn_sell='USD', buy_quantity=buy_quantity)
-    buy_quantity, delta_qi, delta_qj, asset_fee_total, lrna_fee_total, slip_fee_buy, slip_fee_sell = outputs
+    sell_quantity, delta_qi, delta_qj, asset_fee_total, lrna_fee_total, slip_fee_buy, slip_fee_sell = outputs
+    agent = Agent()
+    omnipool.swap(agent, tkn_sell='USD', tkn_buy='HDX', buy_quantity=buy_quantity)
     if slip_fee_buy != 0:
         raise AssertionError('Slip fee buy should be zero.')
     if slip_fee_sell != 0:
         raise AssertionError('Slip fee sell should be zero.')
-    if lrna_fee_total != pytest.approx(0.0005 * (omnipool.lrna['USD'] - omnipool.lrna['USD']), rel=1e-40):
+    if (initial_omnipool.lrna['USD'] - omnipool.lrna['USD']) * mpf(1) / 2000 != pytest.approx(lrna_fee_total, rel=1e-40):
         raise AssertionError('LRNA fee total not calculated correctly.')
     if asset_fee_total != pytest.approx(0.0025 * buy_quantity, rel=1e-40):
         raise AssertionError('Asset fee total not calculated correctly.')
