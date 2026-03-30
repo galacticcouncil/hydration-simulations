@@ -39,32 +39,128 @@ def simulate_trade_before_and_after():
     pass
 
 
-def find_hollar_trades():
-    start_date = datetime.datetime(2026, 2, 17)
-    end_date = datetime.datetime(2026, 2, 24)
-    trades = get_trades_for_dates(
-        start_date=start_date,
-        end_date=datetime.datetime.today(),
-        extra_filter='args: {includes: "222,"}'
-    )
-    hollar_trades = [trade for trade in trades if "HOLLAR" in trade.values()]
-    hollar_h2o_trades = [trade for trade in hollar_trades if "H2O" in trade.values()]
-    shift_hrs = 6
+def get_omnipools(start_date: datetime.datetime, end_date: datetime.datetime) -> dict[datetime.datetime, OmnipoolState]:
+    cache_directory = Path(__file__).parent / 'cached data' / 'omnipools'
+    omnipools = {}
     all_dates = [
         start_date + datetime.timedelta(days=i) for i in range((end_date - start_date).days + 1)
     ]
+    for date in all_dates:
+        block_number = get_block_at_timestamp(date)
+        omnipool_filename = f'omnipool-{date.strftime('%Y-%m-%d')}.json'
+        if Path.exists(cache_directory / omnipool_filename):
+            omnipool_router = load_state(path=str(cache_directory), filename=omnipool_filename)
+        else:
+            omnipool_router = get_current_omnipool_router(block_number=block_number)
+        omnipool: OmnipoolState = omnipool_router.exchanges['omnipool']
+        if "HOLLAR" not in omnipool.liquidity:
+            hollar_liquidity = get_hollar_liquidity_at(block_number)
+            omnipool.liquidity['HOLLAR'] = hollar_liquidity['liquidity']
+            omnipool.lrna['HOLLAR'] = hollar_liquidity['LRNA']
+            omnipool.shares['HOLLAR'] = hollar_liquidity['shares']
+            omnipool.protocol_shares['HOLLAR'] = hollar_liquidity['shares']
+
+        omnipool.add_token(
+            tkn='HOLLAR',
+            liquidity=omnipool.liquidity['HOLLAR'],
+            lrna=omnipool.lrna['HOLLAR'],
+            shares=omnipool.shares['HOLLAR'],
+            protocol_shares=omnipool.protocol_shares['HOLLAR'],
+            weight_cap=1.0
+        ).update()
+        omnipool.time_step = block_number
+
+        if not Path.exists(cache_directory / omnipool_filename):
+            save_state(omnipool_router, path=str(cache_directory), filename=omnipool_filename)
+
+        omnipools[date] = omnipool
+
+    return omnipools
+
+def find_hollar_trades():
+    start_date = datetime.datetime(2026, 2, 16)
+    end_date = datetime.datetime(2026, 3, 18)  # datetime.datetime.today() - datetime.timedelta(days=1)
+
+    trades = get_trades_for_dates(
+        start_date=start_date,
+        end_date=end_date,
+        save_cache=True,
+        cache_directory=Path(__file__).parent / 'cached data' / 'hollar trades',
+        extra_filter='args: {includes: ":222,"}'
+    )
+    omnipools: dict[datetime.datetime, OmnipoolState] = get_omnipools(start_date, end_date)
+
+    # line them up by block numbers to account for any timezone difference
+    all_dates = [
+        start_date + datetime.timedelta(days=i) for i in range((end_date - start_date).days + 1)
+    ]
+    selected_range = st.select_slider(
+        "Date range",
+        options=all_dates,
+        value=(all_dates[0], all_dates[-1]),
+        format_func=lambda d: d.strftime('%Y-%m-%d')
+    )
+    lp_shares = st.number_input("LP shares", min_value=0.0, value=1000.0, step=1.0)
+
+    changed = 0
     for i in range(len(all_dates) - 1):
         date = all_dates[i]
-        date_str = date.strftime('%Y-%m-%d')
-        trades_on_date = [trade for trade in hollar_h2o_trades if trade['date'] == date_str]
-        min_block = get_blocks_at_timestamps([date])[date]
-        max_block = get_blocks_at_timestamps([all_dates[i + 1]])[all_dates[i + 1]]
-        block_per_day = max_block - min_block
-        min_block -= block_per_day * shift_hrs / 24
-        max_block -= block_per_day * shift_hrs / 24
+        min_block = omnipools[date].time_step
+        max_block = omnipools[all_dates[i + 1]].time_step
+        trades_on_date = [trade for trade in trades if 'block_number' in trade and  min_block < trade['block_number'] <= max_block]
         for trade in trades_on_date:
-            trade_time = (trade['block_number'] - min_block) / (max_block - min_block) * datetime.timedelta(hours=24) + date
-            trade['date'] = trade_time.strftime('%Y-%m-%d')
+            if trade['date'] != date.strftime('%Y-%m-%d'):
+                trade['date'] = date.strftime('%Y-%m-%d')
+                changed += 1
+
+    hollar_h2o_trades = [trade for trade in trades if "H2O" in trade.values()]
+    hollar_per_day = {
+        datetime.datetime.strptime(date, '%Y-%m-%d'): sum([trade['amountOut'] for trade in hollar_h2o_trades if trade['date'] == date])
+        for date in set([trade['date'] for trade in hollar_h2o_trades])
+    }
+    hollar_per_day = dict(sorted(hollar_per_day.items(), key=lambda item: item[0]))
+
+    sim_days = list(hollar_per_day.keys())
+    trade_types = set([trade['name'] for trade in trades])
+    trades_by_type = {
+        trade_type: [trade for trade in trades if trade['name'] == trade_type]
+        for trade_type in trade_types
+    }
+    trades_by_type['H2O Sells'] = [trade for trade in trades if 'H2O' in trade.values()]
+    trades_by_type['Hollar Out'] = [
+        trade for trade in trades
+        if (trade['name'] == 'Omnipool.SellExecuted' or trade['name'] == 'Omnipool.BuyExecuted')
+        and trade['assetOut'] == 'HOLLAR'
+    ]
+    trades_by_type['Hollar In'] = [
+        trade for trade in trades
+        if (trade['name'] == 'Omnipool.SellExecuted' or trade['name'] == 'Omnipool.BuyExecuted')
+        and trade['assetIn'] == 'HOLLAR'
+    ]
+
+    relevant_quantity = {
+        'Omnipool.LiquidityAdded': 'amount',
+        'Omnipool.LiquidityRemoved': 'sharesRemoved',
+        'H2O Sells': 'amountOut',
+        'Omnipool.PositionCreated': 'shares',
+        'Hollar Out': 'amountOut',
+        'Hollar In': 'amountIn'
+    }
+    quantities_by_type = {
+        trade_type: sum([float(trade[relevant_quantity[trade_type]]) for trade in trades_by_type[trade_type]])
+        for trade_type in relevant_quantity
+    }
+    quantities_by_type = {
+        trade_type: quantity / 10 ** 18 if quantity > 10 ** 18 else quantity
+        for trade_type, quantity in quantities_by_type.items()
+    }
+    depositors = {
+
+    }
+    relevant_quantity = {'Omnipool.LiquidityAdded': 'amount', 'Omnipool.LiquidityRemoved': 'sharesRemoved', 'H2O Sells': 'amountOut', 'Omnipool.PositionCreated': 'shares', 'Hollar Out': 'amountOut', 'Hollar In': 'amountIn'}
+    transfer_addresses = {
+
+    }
 
     non_router_trades = [trade for trade in hollar_h2o_trades if
                          trade['who'] != '0x6d6f646c726f7574657265780000000000000000000000000000000000000000']
@@ -73,16 +169,31 @@ def find_hollar_trades():
         for date in set([trade['date'] for trade in hollar_h2o_trades])
     }
     h2o_per_day = dict(sorted(h2o_per_day.items(), key=lambda item: item[0]))
-
-    hollar_per_day = {
-        date: sum([trade['amountOut'] for trade in hollar_h2o_trades if trade['date'] == date])
-        for date in set([trade['date'] for trade in hollar_h2o_trades])
-    }
-    hollar_per_day = dict(sorted(hollar_per_day.items(), key=lambda item: item[0]))
-
     hollar_withdraws = {}
 
     big_trades = sorted(non_router_trades, key=lambda trade: -trade['amountOut'])[:5]
+    hollar_percentage_per_day = {
+        date: hollar_per_day[date] / omnipools[date].liquidity['HOLLAR'] if date in hollar_per_day and date in omnipools else 0
+        for date in set(list(hollar_per_day.keys()) + list(omnipools.keys()))
+    }
+    hollar_percentage_per_day = dict(sorted(hollar_percentage_per_day.items(), key=lambda item: item[0]))
+
+    percentage_series = [hollar_percentage_per_day.get(date, 0) for date in all_dates]
+    slider_start_idx = all_dates.index(selected_range[0])
+    slider_end_idx = all_dates.index(selected_range[1])
+    lp_losses = (
+        sum(percentage_series[slider_start_idx: slider_end_idx])
+        * lp_shares
+        / omnipools[all_dates[slider_start_idx]].shares['HOLLAR']
+        * omnipools[all_dates[slider_start_idx]].liquidity['HOLLAR']
+    )
+    st.metric("LP losses in dollars", f"{lp_losses:,.2f}")
+
+    fig, ax = plt.subplots()
+    ax.plot(list(hollar_percentage_per_day.keys()), list(hollar_percentage_per_day.values()))
+    plt.title("Percentage of HOLLAR liquidity sold for H2O per day")
+    st.pyplot(fig)
+    return
     pass
 
     # for i, trade in enumerate(hollar_h2o_trades):
@@ -119,7 +230,6 @@ def find_hollar_trades():
 
     plt.rcParams.update({'font.size': 4})
     fig, ax = plt.subplots()
-    sim_days = list(hollar_per_day.keys())
     cumulative_hollar_sold = [sum([hollar_per_day[day] for day in sim_days if day <= date]) for date in sim_days]
     ax.plot(list(hollar_per_day.keys()), cumulative_hollar_sold)
     ax.xaxis.set_major_locator(MaxNLocator(nbins=5))
@@ -127,85 +237,12 @@ def find_hollar_trades():
     plt.show()
     st.pyplot(fig)
 
-    cache_directory = Path(__file__).parent / 'cached data' / 'omnipools'
-    omnipools = {}
-    for date in sim_days:
-        block_number = 0
-        omnipool_filename = f'omnipool-{date}.json'
-        if Path.exists(cache_directory / omnipool_filename):
-            omnipool_router = load_state(path=str(cache_directory), filename=omnipool_filename)
-        else:
-            block_number = get_block_at_timestamp(datetime.datetime.strptime(date, '%Y-%m-%d'))
-            omnipool_router = get_current_omnipool_router(block_number=block_number)
-        omnipool: OmnipoolState = omnipool_router.exchanges['omnipool']
-        if "HOLLAR" not in omnipool.liquidity:
-            if block_number == 0:
-                block_number = get_block_at_timestamp(datetime.datetime.strptime(date, '%Y-%m-%d'))
-            hollar_liquidity = get_hollar_liquidity_at(block_number)
-            omnipool.liquidity['HOLLAR'] = hollar_liquidity['liquidity']
-            omnipool.lrna['HOLLAR'] = hollar_liquidity['LRNA']
-            omnipool.shares['HOLLAR'] = hollar_liquidity['shares']
-            omnipool.protocol_shares['HOLLAR'] = hollar_liquidity['shares']
-            save_state(omnipool_router, path=str(cache_directory), filename=omnipool_filename)
-
-        omnipools[date] = omnipool
-
     fig, ax = plt.subplots()
     ax.plot(sim_days, [omnipools[date].liquidity['HOLLAR'] for date in sim_days])
     ax.xaxis.set_major_locator(MaxNLocator(nbins=5))
     plt.title("Hollar liquidity in Omnipool")
     plt.show()
     st.pyplot(fig)
-
-    hollar_removes_by_day = {}
-    all_blocks = get_blocks_at_timestamps(all_dates)
-    if not(Path.exists(Path(__file__).parent / "cached data" / "hollar_withdraws.json")):
-        for i in range(len(all_blocks) - 1):
-            min_block = all_blocks[all_dates[i]]
-            max_block = all_blocks[all_dates[i + 1]]
-            url = "https://unified-main-aggr-indx.indexer.hydration.cloud/graphql"
-            query = rf"""
-                    query OmnipoolTransactionQuery($first: Int!) {{
-                      events(
-                        first: $first
-                        orderBy: PARA_BLOCK_HEIGHT_ASC
-                        filter: {{
-                          name: {{ equalTo: "Stableswap.LiquidityRemoved" }}
-                          paraBlockHeight: {{
-                            greaterThanOrEqualTo: {min_block}
-                            lessThanOrEqualTo: {max_block}
-                          }}
-                          args: {{ includes: "\"assetId\":222" }}
-                        }}
-                      ) {{
-                        nodes {{
-                          name
-                          args
-                          id
-                          paraBlockHeight
-                        }}
-                        pageInfo {{
-                          endCursor
-                          hasNextPage
-                        }}
-                      }}
-                    }}
-                    """
-            variables = {"first": 10000}
-            result = query_indexer(url, query, variables)
-            hollar_removes_by_day[all_dates[i]] = result['data']['events']['nodes']
-            for event in hollar_removes_by_day[all_dates[i]]:
-                event.update(json.loads(event['args']))
-                event['amount'] = int(event['amounts'][0]['amount']) / 10 ** 18
-
-            json.dump(
-                {datetime.datetime.strftime(day, '%Y-%m-%d'): hollar_removes_by_day[day] for day in hollar_removes_by_day},
-                open(Path(__file__).parent / "cached data" / "hollar_withdraws.json", 'w')
-            )
-    else:
-        with open(Path(__file__).parent / "cached data" / "hollar_withdraws.json", 'r') as f:
-            hollar_removes_by_day = json.load(f)
-        hollar_removes_by_day = {datetime.datetime.strptime(day, '%Y-%m-%d'): hollar_removes_by_day[day] for day in hollar_removes_by_day}
 
     starting_omnipool = omnipools[sim_days[0]]
     lp = Agent(holdings={'HOLLAR': 1000})
@@ -243,6 +280,120 @@ def find_hollar_trades():
     pass
 
 
+def simulate_lp_experience():
+    start_date = datetime.datetime(2026, 2, 16)
+    end_date = datetime.datetime.today() - datetime.timedelta(days=1)
+
+    trades = get_trades_for_dates(
+        start_date=start_date,
+        end_date=end_date,
+        save_cache=True,
+        cache_directory=Path(__file__).parent / 'cached data' / 'hollar trades',
+        extra_filter='args: {includes: ":222,"}'
+    )
+
+    trade_types = set([trade['name'] for trade in trades])
+    trades_by_type = {
+        trade_type: [trade for trade in trades if trade['name'] == trade_type]
+        for trade_type in trade_types
+    }
+    trades_by_type['H2O Sells'] = [trade for trade in trades if 'H2O' in trade.values()]
+    trades_by_type['Hollar Out'] = [
+        trade for trade in trades
+        if (trade['name'] == 'Omnipool.SellExecuted' or trade['name'] == 'Omnipool.BuyExecuted')
+        and trade['assetOut'] == 'HOLLAR'
+    ]
+    trades_by_type['Hollar In'] = [
+        trade for trade in trades
+        if (trade['name'] == 'Omnipool.SellExecuted' or trade['name'] == 'Omnipool.BuyExecuted')
+        and trade['assetIn'] == 'HOLLAR'
+    ]
+
+    relevant_quantity = {
+        'Omnipool.LiquidityAdded': 'amount',
+        'Omnipool.LiquidityRemoved': 'sharesRemoved',
+        'H2O Sells': 'amountOut',
+        'Omnipool.PositionCreated': 'shares',
+        'Hollar Out': 'amountOut',
+        'Hollar In': 'amountIn'
+    }
+    quantities_by_type = {
+        trade_type: sum([float(trade[relevant_quantity[trade_type]]) for trade in trades_by_type[trade_type]])
+        for trade_type in relevant_quantity
+    }
+    quantities_by_type = {
+        trade_type: quantity / 10 ** 18 if quantity > 10 ** 18 else quantity
+        for trade_type, quantity in quantities_by_type.items()
+    }
+
+    omnipools = list(get_omnipools(start_date, end_date).values())
+    starting_omnipool = omnipools[0].copy()
+    starting_omnipool.withdrawal_fee = False
+    starting_omnipool.max_withdrawal_per_block = float('inf')
+    starting_omnipool.max_lp_per_block = float('inf')
+    lp = Agent(holdings={'HOLLAR': 1000})
+    trade_agent = Agent()
+    starting_omnipool.add_liquidity(lp, tkn_add="HOLLAR", quantity=lp.get_holdings('HOLLAR'))
+    actual_omnipool = starting_omnipool.copy()
+    alternate_omnipool = starting_omnipool.copy()
+    lp_shares = lp.get_holdings(('omnipool', 'HOLLAR'))
+    trades = sorted(trades, key=lambda trade: trade['date'])
+    for omnipool in [actual_omnipool, alternate_omnipool]:
+        for trade in trades:
+            if trade['name'] == 'Omnipool.SellExecuted' or trade['name'] == 'Omnipool.BuyExecuted':
+
+                if trade['assetIn'] == 'H2O':
+                    assetIn = "LRNA"
+                else:
+                    assetIn = trade['assetIn']
+                assetOut = trade['assetOut']
+
+                if assetIn not in omnipool.asset_list:
+                    if assetOut != 'HOLLAR':
+                        continue
+                    omnipool.liquidity['HOLLAR'] -= trade['amountOut']
+                    omnipool.lrna['HOLLAR'] += trade['hubAmountIn']
+                    continue
+
+                elif assetOut not in omnipool.asset_list:
+                    if assetIn != 'HOLLAR':
+                        continue
+                    omnipool.liquidity['HOLLAR'] += trade['amountIn']
+                    omnipool.lrna['HOLLAR'] -= trade['hubAmountOut']
+                    continue
+
+                omnipool.liquidity[assetOut] -= trade['amountOut']
+                if assetIn == 'LRNA':
+                    if omnipool == actual_omnipool:
+                        omnipool.lrna['HDX'] += trade['amountIn']
+                    else:
+                        omnipool.lrna[assetOut] += trade['amountIn']
+                else:
+                    omnipool.liquidity[assetIn] += trade['amountIn']
+                    omnipool.lrna[assetOut] += trade['hubAmountIn']
+                    omnipool.lrna[assetIn] -= trade['hubAmountOut']
+
+            elif trade['name'] == 'Omnipool.LiquidityAdded' or trade['name'] == 'Omnipool.PositionCreated':
+                omnipool.add_liquidity(
+                    trade_agent,
+                    tkn_add='HOLLAR',
+                    quantity=int(trade['amount']) / 10 ** 18
+                )
+            elif trade['name'] == 'Omnipool.LiquidityRemoved':
+                omnipool.remove_liquidity(
+                    trade_agent,
+                    quantity=int(trade['sharesRemoved']) / 10 ** 18,
+                    tkn_remove='HOLLAR'
+                )
+
+    lp1, lp2 = lp.copy(), lp.copy()
+    actual_omnipool.remove_liquidity(lp1, quantity=lp1.get_holdings(('omnipool', 'HOLLAR')), tkn_remove='HOLLAR')
+    alternate_omnipool.remove_liquidity(lp2, quantity=lp2.get_holdings(('omnipool', 'HOLLAR')), tkn_remove='HOLLAR')
+
+
+    pass
+
+
 if __name__ == "__main__":
     find_hollar_trades()
 
@@ -271,3 +422,4 @@ if __name__ == "__main__":
 #
 #
 #
+
