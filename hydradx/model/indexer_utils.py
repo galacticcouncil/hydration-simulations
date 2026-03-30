@@ -1,7 +1,6 @@
 import datetime
 import json
 import requests
-import os
 import concurrent.futures
 from pathlib import Path
 from hydradx.model.amm.omnipool_amm import OmnipoolState, DynamicFee
@@ -138,28 +137,15 @@ def _ensure_block_anchors(timestamps: list[datetime.datetime], cache: dict | Non
             print(f"Cache updated and saved to {BLOCK_CACHE_FILE}")
         else:
             print("Cache updated in memory (not saved).")
-    else:
-        print("Phase 1: All dates found in cache.")
 
     return cache
 
 
-def get_block_at_timestamp(
-    timestamp: datetime.datetime | datetime.date,
-    cache: dict | None = None,
-    save_cache: bool = True,
-    verbose: bool = True,
-    ensure_anchors: bool = True
+def _get_block_at_timestamp_from_cache(
+    ts: datetime.datetime,
+    cache: dict,
+    verbose: bool = True
 ) -> int | None:
-    normalized = _normalize_timestamps(timestamp)
-    ts = normalized[0]
-    cache = cache if cache is not None else load_block_cache()
-    if cache is None:
-        cache = {}
-
-    if ensure_anchors:
-        cache = _ensure_block_anchors(normalized, cache=cache, save_cache=save_cache)
-
     start_of_day = ts.replace(hour=0, minute=0, second=0, microsecond=0)
     end_of_day = start_of_day + datetime.timedelta(days=1)
 
@@ -182,6 +168,25 @@ def get_block_at_timestamp(
         if verbose:
             print(f"Warning: Missing block anchors for {ts.isoformat()}")
         return None
+
+
+def get_block_at_timestamp(
+    timestamp: datetime.datetime | datetime.date,
+    cache: dict | None = None,
+    save_cache: bool = True,
+    verbose: bool = True,
+    ensure_anchors: bool = True
+) -> int | None:
+    normalized = _normalize_timestamps(timestamp)
+    ts = normalized[0]
+    cache = cache if cache is not None else load_block_cache()
+    if cache is None:
+        cache = {}
+
+    if ensure_anchors:
+        cache = _ensure_block_anchors(normalized, cache=cache, save_cache=save_cache)
+
+    return _get_block_at_timestamp_from_cache(ts, cache=cache, verbose=verbose)
 
 
 def get_hollar_liquidity_at(block_number=None):
@@ -637,7 +642,11 @@ def get_stableswap_pools(block_number, stableswap_ids: list | str | int = None) 
               }}
             }} 
         """
-        data = query_indexer(URL_STABLESWAP_STORAGE, stableswap_id_query)['data']['stableswaps']['nodes'][0]
+        try:
+            data = query_indexer(URL_STABLESWAP_STORAGE, stableswap_id_query)['data']['stableswaps']['nodes'][0]
+        except IndexError:
+            print(f"No stableswap data found for pool_id {pool_id} at block {block_number}")
+            continue
         pool_ids[pool_id] = data['id']
 
         stableswap_pool_query = f"""
@@ -857,6 +866,8 @@ def get_all_trades(
         if 'assetIn' in args and 'assetOut' in args:
             sell_id = str(args['assetIn'])
             buy_id = str(args['assetOut'])
+            if sell_id not in asset_info or buy_id not in asset_info:
+                continue
             tkn_sell = asset_info[sell_id]
             tkn_buy = asset_info[buy_id]
             trade['assetIn'] = tkn_sell.unique_id
@@ -880,7 +891,7 @@ def get_all_trades(
         if 'amountIn' in trade and trade['amountIn'] > 0 and 'assetFeeAmount' in trade:
             trade['asset_fee'] = float(trade['assetFeeAmount']) / (float(trade['amountOut']) + float(trade['assetFeeAmount']))
         trade['block_number'] = trade.pop('paraBlockHeight')
-    return [trade for trade in data_all if 'assetIn' in trade and 'assetOut' in trade]
+    return data_all
 
 def get_current_omnipool_fees(
     asset_info: dict[str: AssetInfo] = None,
@@ -1393,7 +1404,7 @@ def get_omnipool_liquidity_at_intervals(
         asset_ids: str or list = None,
         end_time: datetime.datetime = None,
         max_workers: int = 10
-) -> dict[int: dict[str: dict]]:
+) -> dict[int, dict[str, dict]]:
     """
     Fetches historical liquidity using threaded batched GraphQL queries.
     """
