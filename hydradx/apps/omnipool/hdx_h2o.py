@@ -1,7 +1,11 @@
 import os, sys
+
+from hydradx.model.amm.omnipool_amm import OmnipoolState
+
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../"))
 sys.path.append(project_root)
 
+from hydradx.model.amm.agents import Agent
 from hydradx.model.indexer_utils import get_blocks_at_timestamps, get_omnipool_trades, get_dates_of_blocks, \
     get_current_omnipool_router
 from hydradx.model.processing import load_state, save_state
@@ -39,7 +43,6 @@ def get_trades_for_dates(start_date: datetime.datetime, end_date: datetime.datet
         )
         new_trades = [{**trade, 'date': dates_to_download[i][0].strftime('%Y-%m-%d')} for trade in new_trades]
         loaded_trades.extend(new_trades)
-
     return loaded_trades
 
 def save_trades_to_cache(trades):
@@ -114,4 +117,3 @@ sells = [sum([trade['amountIn'] for trade in trades_by_date if trade['date'] == 
 ax.plot(dates, sells)
 st.pyplot(fig)
 pass
-
