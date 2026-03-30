@@ -12,7 +12,7 @@ class AssetFeeCallable(Protocol):
 
 
 class DynamicFee:
-    current: dict[str: float]
+    current: dict[str, float]
     def __init__(
         self,
         minimum: float = 0,
@@ -20,7 +20,7 @@ class DynamicFee:
         amplification: float = 0,
         decay: float = 0,
         # ^^ if these four are provided, we can figure the rest out.
-        current: dict[str: float] = None,
+        current: dict[str, float] = None,
         liquidity: dict = None,
         net_volume: dict = None,
         last_updated: dict = None
@@ -47,15 +47,15 @@ class DynamicFee:
 
 class OmnipoolState(Exchange):
     unique_id: str = 'omnipool'
-    fee_accumulator: dict[str: float]
+    fee_accumulator: dict[str, float]
 
     def __init__(self,
-                 tokens: dict[str: dict],
+                 tokens: dict[str, dict],
                  tvl_cap: float = float('inf'),
                  preferred_stablecoin: str = None,
-                 asset_fee: dict or DynamicFee or float = 0.0,
-                 lrna_fee: dict or DynamicFee or float = 0.0,
-                 oracles: dict[str: int] = None,
+                 asset_fee: dict | DynamicFee | float = 0.0,
+                 lrna_fee: dict | DynamicFee | float = 0.0,
+                 oracles: dict[str, int] = None,
                  trade_limit_per_block: float = float('inf'),
                  update_function: Callable = None,
                  last_oracle_values: dict = None,
@@ -178,7 +178,7 @@ class OmnipoolState(Exchange):
         self.current_block = Block(self)
         self.unique_id = unique_id
 
-    def _create_dynamic_fee(self, value: DynamicFee or dict or float, fee_type: Literal['lrna', 'asset']) -> DynamicFee:
+    def _create_dynamic_fee(self, value: DynamicFee | dict | float, fee_type: Literal['lrna', 'asset']) -> DynamicFee:
         raise_oracle = 'price'
         def get_last_volume():
             return {
@@ -229,7 +229,7 @@ class OmnipoolState(Exchange):
         return self._get_lrna_fee
 
     @lrna_fee.setter
-    def lrna_fee(self, value: DynamicFee or dict or float):
+    def lrna_fee(self, value: DynamicFee | dict | float):
         self._lrna_fee = self._create_dynamic_fee(value, 'lrna')
 
     def set_lrna_fee(self, tkn: str, value: float):
@@ -841,11 +841,13 @@ class OmnipoolState(Exchange):
                 return self.fail_transaction(f'insufficient LRNA in {tkn_sell}')
             if sell_quantity == float('inf'):
                 return self.fail_transaction('not enough liquidity to buy that much.')
-        else:
+        elif sell_quantity and not buy_quantity:
             buy_quantity, delta_qi, delta_qj, asset_fee_total, lrna_fee_total, slip_fee_buy, slip_fee_sell = \
             self.calculate_out_given_in(tkn_buy=tkn_buy, tkn_sell=tkn_sell, sell_quantity=sell_quantity)
             if math.isinf(buy_quantity):
                 return self.fail_transaction('not enough liquidity to buy that much.')
+        else:
+            raise ValueError('Must specify exactly one of buy_quantity or sell_quantity.')
 
         if not agent.validate_holdings(tkn_sell, sell_quantity):
             return self.fail_transaction(f"Agent doesn't have enough {tkn_sell}")
@@ -1281,7 +1283,7 @@ class OmnipoolState(Exchange):
             value += tkn_value
         return value
 
-    def cash_out(self, agent: Agent, prices: dict[str: float] = None, denomination: str = 'LRNA') -> float:
+    def cash_out(self, agent: Agent, prices: dict[str, float] = None, denomination: str = 'LRNA') -> float:
         """
         return the value of the agent's holdings if they withdraw all liquidity
         and then sell at current spot prices
@@ -1355,7 +1357,7 @@ class OmnipoolState(Exchange):
 
         return value_assets(prices, new_holdings)
 
-    def cash_out_mod(self, agent: Agent, prices: dict[str: float] = None, denomination: str = None) -> float:
+    def cash_out_mod(self, agent: Agent, prices: dict[str, float] = None, denomination: str = None) -> float:
         """
         return the value of the agent's holdings if they withdraw all liquidity
         and then sell at current spot prices
