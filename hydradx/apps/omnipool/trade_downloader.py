@@ -11,9 +11,14 @@ def get_trades_for_dates(
         start_date: datetime.datetime,
         end_date: datetime.datetime,
         save_cache=True,
+        cache_directory: str | Path | None = None,
         extra_filter: str | None = 'name: {startsWith: "Omnipool", endsWith: "Executed}'
 ):
     loaded_trades = []
+    if cache_directory is None:
+        cache_directory = Path(__file__).parent / 'cached data' / 'trades'
+    else:
+        cache_directory = Path(cache_directory)
     block_dates = [
         start_date
         + datetime.timedelta(days=i)
@@ -22,7 +27,7 @@ def get_trades_for_dates(
     dates_to_download = []
     for date in block_dates:
         date_str = date.strftime('%Y-%m-%d')
-        cache_file = Path(__file__).parent / 'cached data' / 'trades' / f'trades_{date_str}.txt'
+        cache_file = cache_directory / f'trades_{date_str}.txt'
         if Path.exists(cache_file):
             cached_trades = json.load(open(cache_file, 'r'))
             loaded_trades.extend(cached_trades)
@@ -37,18 +42,25 @@ def get_trades_for_dates(
             extra_filter=extra_filter
         )
         new_trades = [{**trade, 'date': dates_to_download[i][0].strftime('%Y-%m-%d')} for trade in new_trades]
+        if save_cache:
+            save_trades_to_cache(new_trades, cache_directory=cache_directory)
+
         loaded_trades.extend(new_trades)
 
-    if save_cache:
-        save_trades_to_cache(loaded_trades)
     return loaded_trades
 
-def save_trades_to_cache(trades):
+def save_trades_to_cache(trades, cache_directory: str | Path | None = None):
+    if cache_directory is None:
+        cache_directory = Path(__file__).parent / 'cached data' / 'trades'
+    else:
+        cache_directory = Path(cache_directory)
     dates = [trade['date'] for trade in trades]
     unique_dates = sorted(list(set(dates)))
     for date in unique_dates:
-        savefile = Path(__file__).parent / 'cached data' / 'trades' / f'trades_{date}.txt'
+        savefile = cache_directory / f'trades_{date}.txt'
         if not Path.exists(savefile):
+            if not Path.exists(cache_directory):
+                os.makedirs(cache_directory)
             trades_on_date = [trade for trade in trades if trade['date'] == date]
             with open(savefile, 'w') as f:
                 json.dump(trades_on_date, f)
