@@ -1,21 +1,15 @@
-import copy
 import datetime
-from operator import truediv
-
-import math
-
 import pytest
 from hypothesis import given, strategies as st, assume, settings, reproduce_failure
 from mpmath import mp, mpf
 import os
 from pathlib import Path
 
-
 os.chdir('../..')
 
 from hydradx.model.indexer_utils import get_current_omnipool, get_current_omnipool_router, get_blocks_at_timestamps \
-    , get_omnipool_trades, get_omnipool_asset_data, get_asset_info_by_ids, get_omnipool_liquidity_at_intervals \
-    , get_latest_stableswap_data, get_omnipool_liquidity, get_stableswap_pools
+    , get_omnipool_trades, get_asset_info_by_ids, get_omnipool_liquidity_at_intervals \
+    , get_omnipool_liquidity, get_stableswap_pools
 from hydradx.model import run
 from hydradx.model.processing import load_state
 from hydradx.model.amm import omnipool_amm as oamm
@@ -753,4 +747,29 @@ def test_hdx_sandwich(pct_hdx_pool_bought: float, lrna_holdings: int):
         """
         print(test_summary)
         pass
+    pass
+
+
+def test_h2o_tokenomics():
+    # we have to look at the past month's transactions, particularly the ones that involve selling h2o
+    # determine what the impacts on LPs may have been
+    dates = [
+        datetime.datetime(2025, 11, day=i+1) for i in range(30)
+    ] + [
+        datetime.datetime(year=2025, month=12, day=i+1) for i in range(31)
+    ]
+    block_numbers = list(get_blocks_at_timestamps(dates).values())
+    h2o_sold = {}
+    stablepool_trades = []
+    hollar_trades = []
+    for i in range(len(block_numbers) - 1):
+        date = dates[i]
+        trades = get_omnipool_trades(
+            min_block=block_numbers[i],
+            max_block=block_numbers[i + 1]
+        )
+        stablepool_trades.extend([trade for trade in trades if trade['assetOut'] == '2-Pool-Stbl' and trade['assetIn'] == 'H2O'])
+        hollar_trades.extend([trade for trade in trades if trade['assetOut'] == 'HOLLAR' and trade['assetIn'] == 'H2O'])
+
+    stablepool_trades.sort(key=lambda k: -k['amountOut'])
     pass
