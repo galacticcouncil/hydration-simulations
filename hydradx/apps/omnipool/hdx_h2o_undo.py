@@ -77,10 +77,8 @@ def get_omnipools(start_date: datetime.datetime, end_date: datetime.datetime) ->
 
     return omnipools
 
-def find_hollar_trades():
-    start_date = datetime.datetime(2026, 2, 16)
-    end_date = datetime.datetime(2026, 3, 18)  # datetime.datetime.today() - datetime.timedelta(days=1)
-
+@st.cache_data(show_spinner=True)
+def _build_hollar_trade_summary(start_date: datetime.datetime, end_date: datetime.datetime):
     trades = get_trades_for_dates(
         start_date=start_date,
         end_date=end_date,
@@ -90,10 +88,47 @@ def find_hollar_trades():
     )
     omnipools: dict[datetime.datetime, OmnipoolState] = get_omnipools(start_date, end_date)
 
-    # line them up by block numbers to account for any timezone difference
     all_dates = [
         start_date + datetime.timedelta(days=i) for i in range((end_date - start_date).days + 1)
     ]
+
+    # line them up by block numbers to account for any timezone difference
+    for i in range(len(all_dates) - 1):
+        date = all_dates[i]
+        min_block = omnipools[date].time_step
+        max_block = omnipools[all_dates[i + 1]].time_step
+        trades_on_date = [
+            trade for trade in trades
+            if 'block_number' in trade and min_block < trade['block_number'] <= max_block
+        ]
+        for trade in trades_on_date:
+            if trade['date'] != date.strftime('%Y-%m-%d'):
+                trade['date'] = date.strftime('%Y-%m-%d')
+
+    hollar_h2o_trades = [trade for trade in trades if "H2O" in trade.values()]
+    hollar_per_day = {
+        datetime.datetime.strptime(date, '%Y-%m-%d'): sum(
+            [trade['amountOut'] for trade in hollar_h2o_trades if trade['date'] == date]
+        )
+        for date in set([trade['date'] for trade in hollar_h2o_trades])
+    }
+    hollar_per_day = dict(sorted(hollar_per_day.items(), key=lambda item: item[0]))
+
+    hollar_percentage_per_day = {
+        date: hollar_per_day[date] / omnipools[date].liquidity['HOLLAR'] if date in hollar_per_day and date in omnipools else 0
+        for date in set(list(hollar_per_day.keys()) + list(omnipools.keys()))
+    }
+    hollar_percentage_per_day = dict(sorted(hollar_percentage_per_day.items(), key=lambda item: item[0]))
+
+    return all_dates, omnipools, hollar_percentage_per_day
+
+
+def find_hollar_trades():
+    start_date = datetime.datetime(2026, 2, 16)
+    end_date = datetime.datetime(2026, 3, 18)  # datetime.datetime.today() - datetime.timedelta(days=1)
+
+    all_dates, omnipools, hollar_percentage_per_day = _build_hollar_trade_summary(start_date, end_date)
+
     selected_range = st.select_slider(
         "Date range",
         options=all_dates,
@@ -101,82 +136,6 @@ def find_hollar_trades():
         format_func=lambda d: d.strftime('%Y-%m-%d')
     )
     lp_shares = st.number_input("LP shares", min_value=0.0, value=1000.0, step=1.0)
-
-    changed = 0
-    for i in range(len(all_dates) - 1):
-        date = all_dates[i]
-        min_block = omnipools[date].time_step
-        max_block = omnipools[all_dates[i + 1]].time_step
-        trades_on_date = [trade for trade in trades if 'block_number' in trade and  min_block < trade['block_number'] <= max_block]
-        for trade in trades_on_date:
-            if trade['date'] != date.strftime('%Y-%m-%d'):
-                trade['date'] = date.strftime('%Y-%m-%d')
-                changed += 1
-
-    hollar_h2o_trades = [trade for trade in trades if "H2O" in trade.values()]
-    hollar_per_day = {
-        datetime.datetime.strptime(date, '%Y-%m-%d'): sum([trade['amountOut'] for trade in hollar_h2o_trades if trade['date'] == date])
-        for date in set([trade['date'] for trade in hollar_h2o_trades])
-    }
-    hollar_per_day = dict(sorted(hollar_per_day.items(), key=lambda item: item[0]))
-
-    sim_days = list(hollar_per_day.keys())
-    trade_types = set([trade['name'] for trade in trades])
-    trades_by_type = {
-        trade_type: [trade for trade in trades if trade['name'] == trade_type]
-        for trade_type in trade_types
-    }
-    trades_by_type['H2O Sells'] = [trade for trade in trades if 'H2O' in trade.values()]
-    trades_by_type['Hollar Out'] = [
-        trade for trade in trades
-        if (trade['name'] == 'Omnipool.SellExecuted' or trade['name'] == 'Omnipool.BuyExecuted')
-        and trade['assetOut'] == 'HOLLAR'
-    ]
-    trades_by_type['Hollar In'] = [
-        trade for trade in trades
-        if (trade['name'] == 'Omnipool.SellExecuted' or trade['name'] == 'Omnipool.BuyExecuted')
-        and trade['assetIn'] == 'HOLLAR'
-    ]
-
-    relevant_quantity = {
-        'Omnipool.LiquidityAdded': 'amount',
-        'Omnipool.LiquidityRemoved': 'sharesRemoved',
-        'H2O Sells': 'amountOut',
-        'Omnipool.PositionCreated': 'shares',
-        'Hollar Out': 'amountOut',
-        'Hollar In': 'amountIn'
-    }
-    quantities_by_type = {
-        trade_type: sum([float(trade[relevant_quantity[trade_type]]) for trade in trades_by_type[trade_type]])
-        for trade_type in relevant_quantity
-    }
-    quantities_by_type = {
-        trade_type: quantity / 10 ** 18 if quantity > 10 ** 18 else quantity
-        for trade_type, quantity in quantities_by_type.items()
-    }
-    depositors = {
-
-    }
-    relevant_quantity = {'Omnipool.LiquidityAdded': 'amount', 'Omnipool.LiquidityRemoved': 'sharesRemoved', 'H2O Sells': 'amountOut', 'Omnipool.PositionCreated': 'shares', 'Hollar Out': 'amountOut', 'Hollar In': 'amountIn'}
-    transfer_addresses = {
-
-    }
-
-    non_router_trades = [trade for trade in hollar_h2o_trades if
-                         trade['who'] != '0x6d6f646c726f7574657265780000000000000000000000000000000000000000']
-    h2o_per_day = {
-        date: sum([trade['amountIn'] for trade in hollar_h2o_trades if trade['date'] == date])
-        for date in set([trade['date'] for trade in hollar_h2o_trades])
-    }
-    h2o_per_day = dict(sorted(h2o_per_day.items(), key=lambda item: item[0]))
-    hollar_withdraws = {}
-
-    big_trades = sorted(non_router_trades, key=lambda trade: -trade['amountOut'])[:5]
-    hollar_percentage_per_day = {
-        date: hollar_per_day[date] / omnipools[date].liquidity['HOLLAR'] if date in hollar_per_day and date in omnipools else 0
-        for date in set(list(hollar_per_day.keys()) + list(omnipools.keys()))
-    }
-    hollar_percentage_per_day = dict(sorted(hollar_percentage_per_day.items(), key=lambda item: item[0]))
 
     percentage_series = [hollar_percentage_per_day.get(date, 0) for date in all_dates]
     slider_start_idx = all_dates.index(selected_range[0])
@@ -189,9 +148,13 @@ def find_hollar_trades():
     )
     st.metric("LP losses in dollars", f"{lp_losses:,.2f}")
 
-    fig, ax = plt.subplots()
+    fig, ax = plt.subplots(figsize=(6.4, 3.36))
     ax.plot(list(hollar_percentage_per_day.keys()), list(hollar_percentage_per_day.values()))
-    plt.title("Percentage of HOLLAR liquidity sold for H2O per day")
+    ax.set_title("Percentage of HOLLAR liquidity sold for H2O per day", fontsize=8)
+    ax.tick_params(axis='x', labelsize=7)
+    ax.tick_params(axis='y', labelsize=7)
+    ax.xaxis.label.set_size(7)
+    ax.yaxis.label.set_size(7)
     st.pyplot(fig)
     return
     pass
@@ -422,4 +385,3 @@ if __name__ == "__main__":
 #
 #
 #
-
