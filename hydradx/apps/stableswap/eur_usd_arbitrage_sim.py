@@ -7,7 +7,6 @@ import plotly.graph_objects as go
 import dateutil
 from datetime import date, datetime, timedelta, timezone, time
 from pathlib import Path
-from io import StringIO
 
 import sys
 
@@ -19,124 +18,7 @@ sys.path.append(project_root)
 from hydradx.model.amm.stableswap_amm import StableSwapPoolState
 from hydradx.model.amm.fixed_price import FixedPriceExchange
 from hydradx.model.amm.agents import Agent
-
-
-# =============================================================================
-# CLOUD STORAGE (S3 / S3-compatible)
-# =============================================================================
-# Configure via Streamlit secrets (secrets.toml) or environment variables:
-#
-#   [s3]
-#   bucket      = "my-arb-sim-cache"
-#   prefix      = "price-cache/"          # optional, default ""
-#   aws_access_key_id     = "..."
-#   aws_secret_access_key = "..."
-#   region_name           = "us-east-1"   # optional
-#   endpoint_url          = "..."         # optional — for R2, MinIO, etc.
-#
-# If none of the above are set, cloud storage is silently disabled and the
-# app behaves exactly as before (local disk cache only).
-# =============================================================================
-
-def _s3_config() -> dict | None:
-    """
-    Return S3 config dict from st.secrets or environment variables,
-    or None if cloud storage is not configured.
-    """
-    # Try Streamlit secrets first
-    try:
-        cfg = st.secrets.get("s3", {})
-        bucket = cfg.get("bucket") or os.environ.get("S3_BUCKET")
-    except Exception:
-        bucket = os.environ.get("S3_BUCKET")
-        cfg = {}
-
-    if not bucket:
-        return None  # cloud storage not configured — that's fine
-
-    def _get(key: str, env_key: str | None = None) -> str | None:
-        val = cfg.get(key)
-        if val:
-            return val
-        return os.environ.get(env_key or key.upper())
-
-    return {
-        "bucket": bucket,
-        "prefix": _get("prefix", "S3_PREFIX") or "",
-        "aws_access_key_id": _get("aws_access_key_id", "AWS_ACCESS_KEY_ID"),
-        "aws_secret_access_key": _get("aws_secret_access_key", "AWS_SECRET_ACCESS_KEY"),
-        "region_name": _get("region_name", "AWS_DEFAULT_REGION"),
-        "endpoint_url": _get("endpoint_url", "S3_ENDPOINT_URL"),  # for R2 / MinIO
-    }
-
-
-@st.cache_resource(show_spinner=False)
-def _get_s3_client():
-    """Return a boto3 S3 client (cached for the session), or None."""
-    cfg = _s3_config()
-    if cfg is None:
-        return None, None
-
-    try:
-        import boto3
-
-        client_kwargs = {}
-        for key in ("aws_access_key_id", "aws_secret_access_key", "region_name", "endpoint_url"):
-            if cfg.get(key):
-                client_kwargs[key] = cfg[key]
-
-        client = boto3.client("s3", **client_kwargs)
-        return client, cfg
-    except ImportError:
-        st.warning("boto3 is not installed — cloud cache disabled. Run `pip install boto3`.")
-        return None, None
-    except Exception as exc:
-        st.warning(f"Could not initialise S3 client — cloud cache disabled: {exc}")
-        return None, None
-
-
-def _s3_key(exchange: str, day: date, cfg: dict) -> str:
-    prefix = cfg["prefix"].rstrip("/")
-    key = f"{exchange}/{day.isoformat()}.csv"
-    return f"{prefix}/{key}" if prefix else key
-
-
-def _download_from_s3(exchange: str, day: date) -> pd.DataFrame | None:
-    """
-    Try to download a cached CSV from S3. Returns a DataFrame on success,
-    None if the object doesn't exist or cloud storage is unconfigured.
-    """
-    client, cfg = _get_s3_client()
-    if client is None:
-        return None
-
-    key = _s3_key(exchange, day, cfg)
-    try:
-        response = client.get_object(Bucket=cfg["bucket"], Key=key)
-        body = response["Body"].read().decode("utf-8")
-        df = pd.read_csv(StringIO(body))
-        print(f"[cloud] Downloaded {exchange}/{day} from s3://{cfg['bucket']}/{key}")
-        return df
-    except client.exceptions.NoSuchKey:
-        return None  # not cached yet — fetch from exchange API
-    except Exception as exc:
-        print(f"[cloud] S3 download failed for {key}: {exc}")
-        return None
-
-
-def _upload_to_s3(df: pd.DataFrame, exchange: str, day: date) -> None:
-    """Upload a price DataFrame as CSV to S3. Silently skips on any error."""
-    client, cfg = _get_s3_client()
-    if client is None:
-        return
-
-    key = _s3_key(exchange, day, cfg)
-    try:
-        body = df.to_csv(index=False).encode("utf-8")
-        client.put_object(Bucket=cfg["bucket"], Key=key, Body=body, ContentType="text/csv")
-        print(f"[cloud] Uploaded {exchange}/{day} to s3://{cfg['bucket']}/{key}")
-    except Exception as exc:
-        print(f"[cloud] S3 upload failed for {key}: {exc}")
+from hydradx.apps.s3_utils import get_s3_client, download_from_s3, upload_to_s3
 
 
 # =============================================================================
@@ -303,7 +185,7 @@ def get_prices_for_day(exchange_name: str, day: date) -> pd.DataFrame:
         return pd.read_csv(cache_file)
 
     # ── Tier 2: cloud (S3 / R2 / MinIO) ─────────────────────────────────────
-    cloud_df = _download_from_s3(exchange_name, day)
+    cloud_df = download_from_s3(exchange_name, day)
     if cloud_df is not None:
         # Populate local disk so the next hit is even faster
         cache_dir.mkdir(parents=True, exist_ok=True)
@@ -324,7 +206,7 @@ def get_prices_for_day(exchange_name: str, day: date) -> pd.DataFrame:
     df = fetchers[exchange_name](start_date=start_dt, days=1, save_path=cache_file)
 
     # Write to cloud so other instances (or future deployments) skip the API call
-    _upload_to_s3(df, exchange_name, day)
+    upload_to_s3(df, exchange_name, day)
 
     return df
 
@@ -962,7 +844,7 @@ if st.runtime.exists():
     st.title("EUR/USD Arbitrage Simulation")
 
     # Show cloud storage status unobtrusively in the sidebar
-    _client, _cfg = _get_s3_client()
+    _client, _cfg = get_s3_client()
     sidebar = st.sidebar.container()
     if _cfg:
         sidebar.success(f"☁️ Cloud cache: `{_cfg['bucket']}/{_cfg['prefix']}`", icon=None)
