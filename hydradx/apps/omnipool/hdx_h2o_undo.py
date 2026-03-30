@@ -355,7 +355,7 @@ def find_hollar_trades():
     st.metric("Estimated LP losses in dollars", f"{lp_losses:,.2f}")
 
     fig, ax = plt.subplots(figsize=(6.4, 3.36))
-    ax.plot(list(hollar_percentage_per_day.keys()), list(hollar_percentage_per_day.values()))
+    ax.plot(list(hollar_percentage_per_day.keys()), [pct * 100 for pct in list(hollar_percentage_per_day.values())])
     ax.set_title("Percentage of HOLLAR liquidity sold for H2O per day", fontsize=8)
     ax.tick_params(axis='x', labelsize=7)
     ax.tick_params(axis='y', labelsize=7)
