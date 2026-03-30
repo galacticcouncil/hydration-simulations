@@ -12,10 +12,10 @@ from .otc import OTC
 
 class GlobalState:
     def __init__(self,
-                 agents: dict[str: Agent] or list[Agent],
-                 pools: dict[str: Exchange] or list[Exchange],
+                 agents: dict[str, Agent] | list[Agent],
+                 pools: dict[str, Exchange] | list[Exchange],
                  otcs: list[OTC] = None,
-                 external_market: dict[str: float] = None,
+                 external_market: dict[str, float] = None,
                  evolve_function: Callable = None,
                  save_data: dict = None,
                  archive_all: bool = True,
