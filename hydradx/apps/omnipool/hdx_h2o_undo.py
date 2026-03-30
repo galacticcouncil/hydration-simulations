@@ -325,7 +325,22 @@ def find_hollar_trades():
         value=(all_dates[0], all_dates[-1]),
         format_func=lambda d: d.strftime('%Y-%m-%d')
     )
-    lp_shares = st.number_input("LP shares in Hollar", min_value=0.0, value=1000.0, step=1.0)
+    lp_shares = 1000.0
+    input_col, text_col = st.columns([1, 4])
+    with input_col:
+        lp_shares = st.number_input(
+            "LP shares",
+            min_value=0.0,
+            value=lp_shares,
+            step=1.0,
+            key="lp_shares_input",
+            label_visibility="collapsed",
+        )
+    with text_col:
+        st.markdown(
+            f"LP shares in Hollar = ${st.session_state.get('lp_shares_input', lp_shares) / omnipools[selected_range[0]].shares['HOLLAR'] * omnipools[selected_range[0]].liquidity['HOLLAR']:.2f}"
+        )
+
 
     percentage_series = [hollar_percentage_per_day.get(date, 0) for date in all_dates]
     slider_start_idx = all_dates.index(selected_range[0])
@@ -335,8 +350,9 @@ def find_hollar_trades():
         * lp_shares
         / omnipools[all_dates[slider_start_idx]].shares['HOLLAR']
         * omnipools[all_dates[slider_start_idx]].liquidity['HOLLAR']
+        / 2
     )
-    st.metric("LP losses in dollars", f"{lp_losses:,.2f}")
+    st.metric("Estimated LP losses in dollars", f"{lp_losses:,.2f}")
 
     fig, ax = plt.subplots(figsize=(6.4, 3.36))
     ax.plot(list(hollar_percentage_per_day.keys()), list(hollar_percentage_per_day.values()))
