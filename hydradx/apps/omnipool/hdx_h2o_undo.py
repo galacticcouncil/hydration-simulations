@@ -341,17 +341,22 @@ def find_hollar_trades():
             f"LP shares in Hollar = ${st.session_state.get('lp_shares_input', lp_shares) / omnipools[selected_range[0]].shares['HOLLAR'] * omnipools[selected_range[0]].liquidity['HOLLAR']:.2f}"
         )
 
-
     percentage_series = [hollar_percentage_per_day.get(date, 0) for date in all_dates]
     slider_start_idx = all_dates.index(selected_range[0])
     slider_end_idx = all_dates.index(selected_range[1])
-    lp_losses = (
-        sum(percentage_series[slider_start_idx: slider_end_idx])
-        * lp_shares
-        / omnipools[all_dates[slider_start_idx]].shares['HOLLAR']
-        * omnipools[all_dates[slider_start_idx]].liquidity['HOLLAR']
-        / 2
-    )
+    # lp_losses = (
+    #     sum(percentage_series[slider_start_idx: slider_end_idx])
+    #     * lp_shares
+    #     / omnipools[all_dates[slider_start_idx]].shares['HOLLAR']
+    #     * omnipools[all_dates[slider_start_idx]].liquidity['HOLLAR']
+    #     / 2
+    # )
+    lp_losses = 0
+    lp_holdings_pct = 1
+    for i in range(slider_start_idx, slider_end_idx):
+        daily_loss = percentage_series[i]
+        lp_holdings_pct *= (1 - daily_loss / 2)
+    lp_losses = (1 - lp_holdings_pct) * lp_shares / omnipools[all_dates[slider_start_idx]].shares['HOLLAR'] * omnipools[all_dates[slider_start_idx]].liquidity['HOLLAR']
     st.metric("Estimated LP losses in dollars", f"{lp_losses:,.2f}")
 
     fig, ax = plt.subplots(figsize=(6.4, 3.36))
@@ -363,90 +368,6 @@ def find_hollar_trades():
     ax.yaxis.label.set_size(7)
     st.pyplot(fig)
     return
-    pass
-
-    # for i, trade in enumerate(hollar_h2o_trades):
-    #     if trade['who'] == '0x6d6f646c726f7574657265780000000000000000000000000000000000000000':
-    #         for j in range(len(hollar_trades)):
-    #             other_trade = hollar_trades[j]
-    #             if other_trade['block_number'] < trade['block_number']:
-    #                 continue
-    #             if other_trade['who'] != '0x6d6f646c726f7574657265780000000000000000000000000000000000000000':
-    #                 continue
-    #             if other_trade['assetIn'] == 'HOLLAR':
-    #                 if other_trade['who'] == '0x6d6f646c726f7574657265780000000000000000000000000000000000000000':
-    #                     if abs(float(other_trade['amountIn']) - float(trade['amountOut'])) / trade['amountIn'] < 0.01:
-    #                         trade['match'] = j
-    #                         trade['separation'] = other_trade['block_number'] - trade['block_number']
-    #                         break
-
-    #
-    # with open (Path(__file__).parent / 'cached data' / 'sqlpad_hollar_h2o.json', 'r') as f:
-    #     sqlpad_data = json.load(f)
-    #
-    # sum([float(sqlpad_data[i]['amount_in']) if sqlpad_data[i]['asset_out_symbol'] == "HOLLAR" and sqlpad_data[i]["amount_in"] != sqlpad_data[i + 1]["amount_in"] else 0 for i in range(len(sqlpad_data) - 1)])
-    #
-    # matches = 0
-    # for trade in hollar_h2o_trades:
-    #     amount = trade['amountIn']
-    #     for i, other_trade in enumerate(sqlpad_data):
-    #         if abs(float(other_trade['amount_in']) - amount) < 0.000001:
-    #             trade['match'] = i
-    #             matches += 1
-    #             break
-    #     if 'match' not in trade:
-    #         trade['match'] = None
-
-    plt.rcParams.update({'font.size': 4})
-    fig, ax = plt.subplots()
-    cumulative_hollar_sold = [sum([hollar_per_day[day] for day in sim_days if day <= date]) for date in sim_days]
-    ax.plot(list(hollar_per_day.keys()), cumulative_hollar_sold)
-    ax.xaxis.set_major_locator(MaxNLocator(nbins=5))
-    plt.title("Cumulative HOLLAR Bought with H2O")
-    plt.show()
-    st.pyplot(fig)
-
-    fig, ax = plt.subplots()
-    ax.plot(sim_days, [omnipools[date].liquidity['HOLLAR'] for date in sim_days])
-    ax.xaxis.set_major_locator(MaxNLocator(nbins=5))
-    plt.title("Hollar liquidity in Omnipool")
-    plt.show()
-    st.pyplot(fig)
-
-    starting_omnipool = omnipools[sim_days[0]]
-    lp = Agent(holdings={'HOLLAR': 1000})
-    lp_loss_estimate = lp.holdings['HOLLAR'] * sum([hollar_per_day[day] for day in sim_days]) / starting_omnipool.liquidity['HOLLAR'] / 2
-
-    omnipool = starting_omnipool.copy()
-    omnipool.add_liquidity(lp, tkn_add="HOLLAR", quantity=1000)
-    lp_shares = lp.get_holdings(('omnipool', 'HOLLAR'))
-    lp_share_percentage = lp_shares / starting_omnipool.shares['HOLLAR']
-    trader = Agent()
-    hollar_unaccounted_for = 0
-    hollar_unaccounted_for_per_day = {}
-    hollar_price_per_day = {}
-    for day in sim_days:
-        hollar_liquidity = omnipools[day].liquidity['HOLLAR']
-        hollar_lrna = omnipools[day].lrna['HOLLAR']
-        # omnipool.liquidity['HOLLAR'] = hollar_liquidity
-        # omnipool.lrna['HOLLAR'] = hollar_lrna
-        hollar_unaccounted_for_per_day[day] = omnipool.liquidity['HOLLAR'] - omnipools[day].liquidity['HOLLAR'] - hollar_unaccounted_for
-        hollar_unaccounted_for += hollar_unaccounted_for_per_day[day]
-        hollar_price_today = hollar_liquidity / omnipools[day].lrna['HOLLAR']
-        hollar_price_per_day[day] = hollar_price_today
-        hollar_bought_today = hollar_per_day[day]
-        omnipool.swap(
-            trader, tkn_sell='LRNA', tkn_buy='HOLLAR', buy_quantity=hollar_bought_today
-        )
-        omnipool.lrna['HOLLAR'] -= hollar_bought_today / hollar_price_today
-        omnipool.swap(
-            trader, tkn_sell='HOLLAR', tkn_buy='LRNA', sell_quantity=hollar_bought_today / 2
-        )
-        final_price = omnipool.liquidity['HOLLAR'] / omnipool.lrna['HOLLAR']
-        pass
-    omnipool.remove_liquidity(lp, quantity=lp.get_holdings(('omnipool', 'HOLLAR')), tkn_remove='HOLLAR')
-    final_holdings = lp.get_holdings('HOLLAR')
-    pass
 
 
 def simulate_lp_experience():
@@ -586,10 +507,10 @@ if __name__ == "__main__":
 # so far, no. I'm losing like half the liquidity along the way for some reason, and I don't really know where it went.
 # I need to find out.
 #
-#
-#
-#
-#
+# we look through each day when this change was active and see what percentage of the HOLLAR liquidity was sold for H2O specifically on that day.
+# then we apply that percentage to the LP's share of the pool to see how much of their HOLLAR was effectively sold for H2O each day, and sum that up over the date range.
+# I find that there aren't any impermanent losses avoided for the LPs, because when the price of H2O falls, the value of their withdrawals actually increases
+# (They receive the same amount of Hollar when they withdraw plus more H2O.)
 #
 #
 #
