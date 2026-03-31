@@ -847,7 +847,8 @@ class OmnipoolState(Exchange):
             if math.isinf(buy_quantity):
                 return self.fail_transaction('not enough liquidity to buy that much.')
         else:
-            raise ValueError('Must specify exactly one of buy_quantity or sell_quantity.')
+            # if both buy and sell quantities are specified, we allow that
+            pass
 
         if not agent.validate_holdings(tkn_sell, sell_quantity):
             return self.fail_transaction(f"Agent doesn't have enough {tkn_sell}")
