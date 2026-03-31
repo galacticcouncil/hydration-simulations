@@ -1,11 +1,13 @@
 import base64
-import datetime
+from datetime import datetime, timedelta, timezone
 import dateutil.parser
 import json
 import os
 import time
 from csv import reader
 from zipfile import ZipFile
+from pathlib import Path
+import pandas as pd
 
 import requests
 from dotenv import load_dotenv
@@ -107,7 +109,7 @@ def import_binance_prices(
         stablecoin: str = 'USDT', return_as_dict: bool = False
 ) -> dict[str: list[float]]:
     start_date = dateutil.parser.parse(start_date)
-    dates = [datetime.datetime.strftime(start_date + datetime.timedelta(days=i), "%Y-%m-%d") for i in range(days)]
+    dates = [datetime.strftime(start_date + timedelta(days=i), "%Y-%m-%d") for i in range(days)]
     if isinstance(assets, str): assets = [assets]
     # find the data folder
     while not os.path.exists("./data"):
@@ -159,8 +161,8 @@ def import_monthly_binance_prices(
 ) -> dict[str: list[float]]:
     start_mth, start_year = start_month.split(' ')
 
-    start_date = datetime.datetime.strptime(start_mth + ' 15 ' + start_year, "%b %d %Y")
-    dates = [datetime.datetime.strftime(start_date + datetime.timedelta(days=i * 30), "%Y-%m") for i in range(months)]
+    start_date = datetime.strptime(start_mth + ' 15 ' + start_year, "%b %d %Y")
+    dates = [datetime.strftime(start_date + timedelta(days=i * 30), "%Y-%m") for i in range(months)]
 
     # find the data folder
     while not os.path.exists("./data"):
@@ -462,14 +464,19 @@ def get_current_omnipool_router(rpc='wss://rpc.hydradx.cloud') -> OmnipoolRouter
     return router
 
 
-def save_omnipool(omnipool_router: OmnipoolRouter, path: str = './archive'):
-    ts = time.time()
+def save_state(omnipool_router: OmnipoolRouter, path: str or Path = './archive', filename: str = ''):
+    filepath = Path(path)
+
+    if not filename:
+        ts = time.time()
+        filename = f'omnipool_savefile_{ts}.json'
+
     omnipool = omnipool_router.exchanges.get('omnipool', None)
     stableswap_pools = []
     for exchange_id in omnipool_router.exchanges:
         if isinstance(omnipool_router.exchanges[exchange_id], StableSwapPoolState):
             stableswap_pools.append(omnipool_router.exchanges[exchange_id])
-    with open(os.path.join(path, f'omnipool_savefile_{ts}.json'), 'w+') as output_file:
+    with open(filepath / filename, 'w+') as output_file:
         json.dump(
             {
                 'liquidity': omnipool.liquidity,
@@ -493,11 +500,15 @@ def save_omnipool(omnipool_router: OmnipoolRouter, path: str = './archive'):
         )
 
 
-def load_omnipool(path: str = './archive', filename: str = '') -> OmnipoolRouter:
+def load_state(path: str or Path = './cached data', filename: str = '') -> OmnipoolRouter:
+    filepath = Path(path)
+    if filepath.is_file():
+        filename = filepath.name
     if filename:
         file_ls = [filename]
     else:
-        file_ls = list(filter(lambda file: file.startswith('omnipool_savefile'), os.listdir(path)))
+        # get files starting with 'omnipool' from the directory
+        file_ls = [f for f in os.listdir(path) if f.startswith('omnipool')]
     for filename in reversed(sorted(file_ls)):  # by default, load the latest first
         with open(os.path.join(path, filename), 'r') as input_file:
             json_state = json.load(input_file)

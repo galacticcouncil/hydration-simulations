@@ -1,16 +1,18 @@
+import datetime
 import json
 import requests
-
+import concurrent.futures
+from pathlib import Path
 from hydradx.model.amm.omnipool_amm import OmnipoolState, DynamicFee
 from hydradx.model.amm.omnipool_router import OmnipoolRouter
 from hydradx.model.amm.stableswap_amm import StableSwapPoolState
 import hydradx.model.production_settings as settings
 
 
-URL_UNIFIED_PROD = 'https://galacticcouncil.squids.live/hydration-pools:unified-prod/api/graphql'
-URL_OMNIPOOL_STORAGE = 'https://galacticcouncil.squids.live/hydration-storage-dictionary:omnipool-v2/api/graphql'
-URL_STABLESWAP_STORAGE = 'https://galacticcouncil.squids.live/hydration-storage-dictionary:stablepool-v2/api/graphql'
-URL_GENERIC_DATA = 'https://galacticcouncil.squids.live/hydration-storage-dictionary:generic-data-v2/api/graphql'
+URL_UNIFIED_PROD = 'https://orca-main-aggr-indx.indexer.hydration.cloud/graphql'
+URL_OMNIPOOL_STORAGE = 'https://storage-dict-omnipool-hist-data-v2.orca.hydration.cloud/graphql'
+URL_STABLESWAP_STORAGE = 'https://storage-dict-stableswap-hist-data-v2.orca.hydration.cloud/graphql'
+URL_GENERIC_DATA = 'https://storage-dict-generic-hist-data-v2.orca.hydration.cloud/graphql'
 
 class AssetInfo:
     def __init__(
@@ -51,7 +53,195 @@ def query_indexer(url: str, query: str, variables: dict = None) -> dict:
     return return_val
 
 
-def get_asset_info_by_ids(asset_ids: list = None) -> dict[str: AssetInfo]:
+BASE_DIR = Path(__file__).resolve().parent
+CACHE_DIR = BASE_DIR / "cache"
+BLOCK_CACHE_FILE = CACHE_DIR / "omnipool_block_cache.json"
+
+
+def chunks(lst, n):
+    for i in range(0, len(lst), n):
+        yield lst[i:i + n]
+
+
+def load_block_cache():
+    if BLOCK_CACHE_FILE.exists():
+        with open(BLOCK_CACHE_FILE, 'r') as f:
+            return json.load(f)
+    return {}
+
+
+def save_block_cache(cache):
+    with open(BLOCK_CACHE_FILE, 'w') as f:
+        json.dump(cache, f, indent=2, sort_keys=True)
+
+def is_decimal(s):
+    try:
+        float(s) # or int(s) if you only want integers
+        return True
+    except ValueError:
+        return False
+
+
+def _normalize_timestamps(timestamps: list[datetime.datetime] | datetime.datetime | datetime.date):
+    if not isinstance(timestamps, list):
+        timestamps = [timestamps]
+    return [
+        ts if isinstance(ts, datetime.datetime) else datetime.datetime.combine(ts, datetime.time())
+        for ts in timestamps
+    ]
+
+
+def _ensure_block_anchors(timestamps: list[datetime.datetime], cache: dict | None = None, max_workers: int = 10, save_cache: bool = True):
+    cache = cache if cache is not None else load_block_cache()
+
+    needed_anchors = {}
+    for ts in timestamps:
+        start_of_day = ts.replace(hour=0, minute=0, second=0, microsecond=0)
+        end_of_day = start_of_day + datetime.timedelta(days=1)
+        needed_anchors[start_of_day.date().isoformat()] = start_of_day
+        needed_anchors[end_of_day.date().isoformat()] = end_of_day
+
+    missing_date_keys = [k for k in needed_anchors if k not in cache]
+
+    if missing_date_keys:
+        print(f"Phase 1: Cache miss. Fetching {len(missing_date_keys)} daily anchors...")
+
+        def _fetch_anchor(chunk_keys):
+            local_res = {}
+            for date_key in chunk_keys:
+                ts_obj = needed_anchors[date_key]
+                ts_iso = ts_obj.isoformat()
+
+                query = f"""
+                query {{
+                    blocks(last: 1, orderBy: ID_ASC, filter: {{timestamp: {{lessThanOrEqualTo: \"{ts_iso}\"}}}}) {{
+                        nodes {{ id }}
+                    }}
+                }}
+                """
+                resp = query_indexer(url=URL_UNIFIED_PROD, query=query)
+                try:
+                    node = resp['data']['blocks']['nodes'][0]
+                    local_res[date_key] = int(node['id'].split('-')[0])
+                except (KeyError, IndexError, TypeError):
+                    print(f"Warning: Could not fetch block for {date_key}")
+            return local_res
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = [executor.submit(_fetch_anchor, chunk) for chunk in chunks(missing_date_keys, 5)]
+            for future in concurrent.futures.as_completed(futures):
+                cache.update(future.result())
+
+        if save_cache:
+            save_block_cache(cache)
+            print(f"Cache updated and saved to {BLOCK_CACHE_FILE}")
+        else:
+            print("Cache updated in memory (not saved).")
+
+    return cache
+
+
+def _get_block_at_timestamp_from_cache(
+    ts: datetime.datetime,
+    cache: dict,
+    verbose: bool = True
+) -> int | None:
+    start_of_day = ts.replace(hour=0, minute=0, second=0, microsecond=0)
+    end_of_day = start_of_day + datetime.timedelta(days=1)
+
+    start_key = start_of_day.date().isoformat()
+    end_key = end_of_day.date().isoformat()
+
+    try:
+        block_start = cache[start_key]
+        block_end = cache[end_key]
+
+        day_duration_sec = (end_of_day - start_of_day).total_seconds()
+        day_block_diff = block_end - block_start
+
+        if day_duration_sec <= 0:
+            return block_start
+        blocks_per_sec = day_block_diff / day_duration_sec
+        target_offset_sec = (ts - start_of_day).total_seconds()
+        return int(block_start + (target_offset_sec * blocks_per_sec))
+    except KeyError:
+        if verbose:
+            print(f"Warning: Missing block anchors for {ts.isoformat()}")
+        return None
+
+
+def get_block_at_timestamp(
+    timestamp: datetime.datetime | datetime.date,
+    cache: dict | None = None,
+    save_cache: bool = True,
+    verbose: bool = True,
+    ensure_anchors: bool = True
+) -> int | None:
+    normalized = _normalize_timestamps(timestamp)
+    ts = normalized[0]
+    cache = cache if cache is not None else load_block_cache()
+    if cache is None:
+        cache = {}
+
+    if ensure_anchors:
+        cache = _ensure_block_anchors(normalized, cache=cache, save_cache=save_cache)
+
+    return _get_block_at_timestamp_from_cache(ts, cache=cache, verbose=verbose)
+
+
+def get_hollar_liquidity_at(block_number=None):
+    query = f"""
+        query MyQuery {{
+          omnipoolAssetHistoricalData(
+            filter: {{
+              assetId: {{equalTo: "0x531a654d1696ed52e7275a8cede955e82620f99a"}},
+              paraBlockHeight: {{lessThanOrEqualTo: {block_number if block_number else 'null'}}}
+            }}
+            orderBy: PARA_BLOCK_HEIGHT_DESC
+            first: 1
+          ) {{
+            nodes {{
+              paraBlockHeight
+              freeBalance
+              tvlInRefAssetNorm
+              assetHubReserve
+              assetShares
+            }}
+          }}
+        }}
+    """
+    data = query_indexer(URL_UNIFIED_PROD, query)
+    hollar_liquidity = data['data']['omnipoolAssetHistoricalData']['nodes'][0]
+    return {
+        'block': hollar_liquidity['paraBlockHeight'],
+        'liquidity': int(hollar_liquidity['freeBalance']) / 10 ** 18,
+        'LRNA': int(hollar_liquidity['assetHubReserve']) / 10 ** 12,
+        'shares': int(hollar_liquidity['assetShares']) / 10 ** 18,
+    }
+
+
+def get_blocks_at_timestamps(timestamps: list[datetime.datetime]) -> dict[datetime.datetime, int]:
+    """
+    Returns a dict {timestamp: block_number}.
+    Uses a persistent daily cache: {"YYYY-MM-DD": block_int}
+    """
+    normalized = _normalize_timestamps(timestamps)
+    cache = _ensure_block_anchors(normalized)
+
+    results = {}
+    for ts in normalized:
+        results[ts] = get_block_at_timestamp(
+            ts,
+            cache=cache,
+            save_cache=False,
+            verbose=False,
+            ensure_anchors=False
+        )
+
+    return results
+
+
+def get_asset_info_by_ids(asset_ids: list = None) -> dict[str, AssetInfo]:
 
     asset_query = f"""
     query assetInfoByAssetIds{'($assetIds: [String!]!)' if asset_ids else ''} {{
@@ -93,8 +283,11 @@ def get_asset_info_by_ids(asset_ids: list = None) -> dict[str: AssetInfo]:
 def get_omnipool_asset_data(
         min_block_id: int,
         max_block_id: int,
-        asset_ids: list[str] or list[int] = None
+        asset_ids: list[str] | list[int] = None
 ) -> list:
+    """
+
+    """
 
     variables: dict[str, object] = {
         "minBlock": min_block_id,
@@ -172,7 +365,7 @@ def get_omnipool_data_by_asset(
 
 
 def get_current_block_height():
-    url = 'https://galacticcouncil.squids.live/hydration-pools:unified-prod/api/graphql'
+    url = URL_UNIFIED_PROD
 
     latest_block_query = """
         query BlockHeight {
@@ -272,7 +465,7 @@ def get_latest_stableswap_data(
     return pool_data_formatted
 
 
-def get_current_omnipool_assets() -> list[str]:
+def get_current_omnipool_asset_ids() -> list[str]:
     query = """
     query assetInfoByAssetIds {
       omnipoolAssets(filter: {isRemoved: {equalTo: false}}) {
@@ -284,11 +477,11 @@ def get_current_omnipool_assets() -> list[str]:
     """
     data = query_indexer(URL_UNIFIED_PROD, query)
     ids = [node['assetId'] for node in data['data']['omnipoolAssets']['nodes']]
-    for i in ids:
-        try:
-            int(i)
-        except ValueError:
-            ids.remove(i)
+    # for i in ids:
+    #     try:
+    #         int(i)
+    #     except ValueError:
+    #         ids.remove(i)
     # hub token doesn't count
     ids.remove('1')
     return ids
@@ -399,131 +592,108 @@ def get_fee_pcts(data, asset_id):
     return fee_pcts
 
 
-def get_current_stableswap_pools(block_number):
+def get_stableswap_pools(block_number, stableswap_ids: list | str | int = None) -> dict[str, StableSwapPoolState]:
     all_assets = get_asset_info_by_ids()
-    stableswap_ids = [asset.id for asset in all_assets.values() if asset.asset_type == 'StableSwap']
+    if isinstance(stableswap_ids, int):
+        stableswap_ids = [str(stableswap_ids)]
+    if isinstance(stableswap_ids, str):
+        stableswap_ids = [stableswap_ids]
+    if stableswap_ids is None:
+        stableswap_ids = [asset.id for asset in all_assets.values() if asset.asset_type == 'StableSwap']
+    pool_ids = {}
+    asset_ids = set()
+    stableswap_pools = {}
+
+    # first get asset info
     stableswap_asset_query = """
         query assetInfoByAssetIds {
-            stableswapAssets {
-                nodes {
-                    pool {
-                        id
-                    }
-                    asset {
-                        name
-                        symbol
-                        id
-                        decimals
-                    }
-                }
+          assets {
+            nodes {
+              decimals
+              name
+              symbol
+              id
+              assetType
             }
+          }
         }
     """
-    stableswap_query_data = query_indexer(URL_UNIFIED_PROD, stableswap_asset_query)['data']['stableswapAssets']['nodes']
-    stableswap_asset_data = {}
-    for node in sorted(
-        stableswap_query_data,
-        key=lambda n: n['asset']['id']
-    ):
-        asset_id = str(node['asset']['id'])
-        if asset_id not in stableswap_asset_data:
-            stableswap_asset_data[asset_id] = {
-                'pool_id': [node['pool']['id']],
-                'decimals': node['asset']['decimals'],
-                'symbol': node['asset']['symbol'],
-                'name': node['asset']['name']
-            }
-        else:
-            # same asset can be in more than one pool
-            stableswap_asset_data[asset_id]['pool_id'].append(node['pool']['id'])
-
-    stableswap_pools = {
-        str(asset.id): StableSwapPoolState(
-            unique_id=asset.name,
-            tokens={node['name']: 0 for node in stableswap_asset_data.values() if asset.id in node['pool_id']},
-            amplification=0
-        ) for asset in get_asset_info_by_ids(stableswap_ids).values()
+    asset_data = {
+        asset['id']: {
+            'decimals': asset['decimals'],
+            'name': asset['name'],
+            'symbol': asset['symbol'],
+            'assetType': asset['assetType']
+        } for asset in
+        query_indexer(URL_STABLESWAP_STORAGE, stableswap_asset_query)['data']['assets']['nodes']
     }
 
-    current_block = block_number
-    max_queries = 20
-    blocks_per_query = 100
-    queries = 0
-    asset_ids_remaining = list(stableswap_asset_data.keys())
-    while len(asset_ids_remaining) > 0 and queries < max_queries:
-        query = f"""
-            query StableSwapPoolData {{
-                stableswapAssetData(
-                    filter: {{
-                        paraBlockHeight: {{
-                            lessThanOrEqualTo: {current_block}, 
-                            greaterThan: {current_block - blocks_per_query}
-                        }}
-                    }}, orderBy: PARA_BLOCK_HEIGHT_DESC
-                ) {{
-                    nodes {{
-                        balances
-                        assetId
-                        pool {{
-                            poolId
-                            paraBlockHeight
-                            pegs
-                            fee
-                            finalAmplification
-                        }}
-                    }}
+    for pool_id in stableswap_ids:
+        stableswap_id_query = f"""
+            query assetInfoByAssetIds {{
+              stableswaps(
+                filter: {{id: {{startsWith: "{pool_id}-"}}, paraBlockHeight: {{lessThanOrEqualTo: {block_number}}}}}
+                last: 1
+              ) {{
+                nodes {{
+                  id
+                  paraBlockHeight
                 }}
+              }}
+            }} 
+        """
+        try:
+            data = query_indexer(URL_STABLESWAP_STORAGE, stableswap_id_query)['data']['stableswaps']['nodes'][0]
+        except IndexError:
+            print(f"No stableswap data found for pool_id {pool_id} at block {block_number}")
+            continue
+        pool_ids[pool_id] = data['id']
+
+        stableswap_pool_query = f"""
+            query assetInfoByAssetIds {{
+              stableswap(id: "{pool_ids[pool_id]}") {{
+                pegs
+                stableswapAssetDataByPoolId {{
+                  nodes {{
+                    assetId
+                    balances
+                    id
+                  }}
+                }}
+                finalAmplification
+                fee
+              }}
             }}
         """
+        data = query_indexer(URL_STABLESWAP_STORAGE, stableswap_pool_query)['data']['stableswap']
 
-        # variables = {'assetIds': asset_ids_remaining}
-        data = query_indexer(URL_STABLESWAP_STORAGE, query)
-        for node in data['data']['stableswapAssetData']['nodes']:
-            asset_id = str(node['assetId'])
-            if asset_id not in asset_ids_remaining:
-                continue
-            asset_name = stableswap_asset_data[asset_id]['name']
-            pool_id = str(node['pool']['poolId'])
-            block = node['pool']['paraBlockHeight']
-            pool = stableswap_pools[pool_id]
-            pool.liquidity[asset_name] = int(node['balances']['d'][0]) / 10 ** stableswap_asset_data[asset_id]['decimals']
-            if block > pool.time_step:
-                pool.trade_fee = float(node['pool']['fee'] / 1000000)
-                pool.amplification = node['pool']['finalAmplification']
-                pegs = [
-                    int(node['pool']['pegs'][i][0]) / int(node['pool']['pegs'][i][1])
-                    for i in range(len(node['pool']['pegs']) - 1)
-                ]
-                if len(pegs) != len(pool.asset_list) - 1:
-                    pass
-                pool.set_peg_target(pegs)
-                pool.set_peg(pegs)
-                pool.time_step = block
-            asset_ids_remaining.remove(asset_id)
+        pegs = [
+            int(data['pegs'][i][0]) / int(data['pegs'][i][1])
+            for i in range(len(data['pegs']) - 1)
+        ]
+        if len(pegs) != len(data['stableswapAssetDataByPoolId']['nodes']) - 1:
+            raise ValueError("Peg length does not match asset list length")
 
-        queries += 1
-        current_block -= blocks_per_query
+        pool = StableSwapPoolState(
+            unique_id=asset_data[pool_id]['name'],
+            peg=pegs,
+            peg_target=pegs,
+            amplification=data['finalAmplification'],
+            trade_fee=data['fee'] / 1000000,
+            tokens={
+                asset_data[str(asset['assetId'])]['name']: int(asset['balances']['d'][0]) / (10 ** asset_data[str(asset['assetId'])]['decimals'])
+                for asset in data['stableswapAssetDataByPoolId']['nodes']
+            }
+        )
+        stableswap_pools[pool_id] = pool
 
-    # there may be some tokens we can't get liquidity values for... in that case, guesstimate
-    for pool in stableswap_pools.values():
-        for tkn in pool.liquidity:
-            if pool.liquidity[tkn] == 0:
-                pool.liquidity[tkn] = sum(
-                    [
-                        pool.liquidity[t] * (1 if i == 0 else pool.peg[i])
-                        for i, t in enumerate(pool.asset_list) if t != tkn
-                    ]
-                ) / (len(pool.asset_list) - 1)
-
-    # get total issuance of shares
-    stableswap_share_assets = {tkn: all_assets[tkn] for tkn in all_assets if all_assets[tkn].id in stableswap_ids}
-    for pool_id in stableswap_ids:
+        # get total issuance of shares
         query = f"""
             query GetTotalIssuance {{
               assetHistoricalData(
                 first: 1
                 orderBy: PARA_BLOCK_HEIGHT_DESC
-                filter: {{assetId: {{equalTo: "{pool_id}"}}}}
+                filter: {{assetId: {{equalTo: "{pool_id}"}}, paraBlockHeight: {{lessThanOrEqualTo: {block_number}}}}}
               ) {{
                 nodes {{
                   assetId
@@ -533,20 +703,28 @@ def get_current_stableswap_pools(block_number):
               }}
             }}
         """
-        shares = int(query_indexer(URL_GENERIC_DATA, query)['data']['assetHistoricalData']['nodes'][0]['totalIssuance'])
-        shares /= 10 ** stableswap_share_assets[pool_id].decimals
+        data = query_indexer(URL_GENERIC_DATA, query)
+        try:
+            shares = int(data['data']['assetHistoricalData']['nodes'][0]['totalIssuance'])
+        except:
+            shares = sum(stableswap_pools[pool_id].liquidity.values()) # fallback if we can't get total issuance, not ideal but better than nothing
+        shares /= 10 ** asset_data[pool_id]["decimals"]
         stableswap_pools[pool_id].shares = shares
 
     return stableswap_pools
 
 
-def get_omnipool_liquidity(block_number: int = None, assets: dict[str: AssetInfo] = None, max_queries: int = 10):
+def get_omnipool_liquidity(
+        block_number: int = None, assets: dict[str, AssetInfo] = None, max_queries: int = 10
+) -> dict[str, dict]:
     asset_info = assets if assets else get_asset_info_by_ids()
-    asset_ids_remaining = [asset.id for asset in assets.values()] if assets else get_current_omnipool_assets()
+    asset_ids_remaining = [asset.id for asset in assets.values()] if assets else get_current_omnipool_asset_ids()
     if '1' not in asset_info:
         asset_info.update(get_asset_info_by_ids(['1']))  # ensure hub token info is present
     if '1' in asset_ids_remaining:
         asset_ids_remaining.remove('1')  # hub token not needed
+    # remove asset_ids that can't convert into base 10 decimals
+    asset_ids_remaining = [asset_id for asset_id in asset_ids_remaining]
     liquidity = {}
     lrna = {}
     shares = {}
@@ -583,13 +761,24 @@ def get_omnipool_liquidity(block_number: int = None, assets: dict[str: AssetInfo
 
 
 def get_current_omnipool(block_number = None):
-    asset_ids = get_current_omnipool_assets()
+    asset_ids = get_current_omnipool_asset_ids()
     asset_info = get_asset_info_by_ids(asset_ids + ['1'])
     max_block = get_current_block_height() if block_number is None else block_number
     liquidity_data = get_omnipool_liquidity(block_number=max_block, assets=asset_info)
+    if block_number >= 11666784:
+        hollar = AssetInfo(
+            asset_type="Hollar",
+            decimals=18,
+            id='0x531a654d1696ed52e7275a8cede955e82620f99a',
+            is_sufficient=False,
+            name="Hollar",
+            symbol="HOLLAR"
+        )
+        asset_info[hollar.id] = hollar
+        liquidity_data["HOLLAR"] = get_hollar_liquidity_at(max_block)
 
     asset_fee, lrna_fee = get_current_omnipool_fees(
-        asset_info={tkn: asset_info[tkn] for tkn in asset_ids},
+        asset_info={tkn: asset_info[tkn] for tkn in asset_info},
         block_number=block_number
     )
 
@@ -603,9 +792,19 @@ def get_current_omnipool(block_number = None):
 
 
 def get_omnipool_trades(
-    asset_info: dict[str: AssetInfo] = None,
+    asset_info: dict[str, AssetInfo] = None,
     min_block: int = None,
-    max_block: int = None
+    max_block: int = None,
+):
+    extra_filter = 'name: {startsWith: "Omnipool", endsWith: "Executed}'
+    return get_all_trades(asset_info, min_block, max_block, extra_filter)
+
+
+def get_all_trades(
+    asset_info: dict[str, AssetInfo] = None,
+    min_block: int = None,
+    max_block: int = None,
+    extra_filter: str = None
 ):
     if asset_info and isinstance(list(asset_info.keys())[0], int):
         raise TypeError("Asset info keys must be str.")
@@ -622,7 +821,7 @@ def get_omnipool_trades(
                 after: $after,
                 orderBy: PARA_BLOCK_HEIGHT_ASC,
                 filter: {{
-                    name: {{includes: "Omnipool"}}, 
+                    {extra_filter}{', ' if extra_filter else ''}
                     paraBlockHeight: {{
                         greaterThanOrEqualTo: {min_block}, 
                         lessThanOrEqualTo: {max_block}
@@ -658,28 +857,38 @@ def get_omnipool_trades(
         after_cursor = page_info['endCursor']
 
     for trade in data_all:
-        args = {
-            arg[:arg.index(':')].strip('"'): arg[arg.index(':') + 1:].strip('"')
-            for arg in trade['args'].strip('}').strip('{').split(',')
-        }
+        if ':' in trade['args']:
+            args = json.loads(trade['args'])
+        else:
+            args = {}
         trade.pop("args")
         trade.update(args)
-        sell_id = args['assetIn']
-        buy_id = args['assetOut']
-        tkn_sell = asset_info[sell_id]
-        tkn_buy = asset_info[buy_id]
-        trade['assetIn'] = tkn_sell.unique_id
-        trade['assetOut'] = tkn_buy.unique_id
-        trade['amountIn'] = int(args['amountIn']) / (10 ** tkn_sell.decimals) if tkn_sell else None
-        trade['amountOut'] = int(args['amountOut']) / (10 ** tkn_buy.decimals) if tkn_buy else None
-        trade['protocolFeeAmount'] = int(args['protocolFeeAmount']) / (10 ** asset_info['1'].decimals)
-        trade['assetFeeAmount'] = int(args['assetFeeAmount']) / (10 ** tkn_buy.decimals) if tkn_buy else None
-        trade['hubAmountOut'] = int(args['hubAmountOut']) / (10 ** asset_info['1'].decimals)
-        trade['hubAmountIn'] = int(args['hubAmountIn']) / (10 ** asset_info['1'].decimals)
-        trade['assetFee'] = float(trade['assetFeeAmount']) / (trade['amountOut'] + trade['assetFeeAmount'])
-        if trade['hubAmountOut'] > 0:
+        if 'assetIn' in args and 'assetOut' in args:
+            sell_id = str(args['assetIn'])
+            buy_id = str(args['assetOut'])
+            if sell_id not in asset_info or buy_id not in asset_info:
+                continue
+            tkn_sell = asset_info[sell_id]
+            tkn_buy = asset_info[buy_id]
+            trade['assetIn'] = tkn_sell.unique_id
+            trade['assetOut'] = tkn_buy.unique_id
+        if 'amountIn' in args:
+            trade['amountIn'] = int(args['amountIn']) / (10 ** tkn_sell.decimals) if tkn_sell else None
+        if 'amountOut' in args:
+            trade['amountOut'] = int(args['amountOut']) / (10 ** tkn_buy.decimals) if tkn_buy else None
+        if 'protocolFeeAmount' in args:
+            trade['protocolFeeAmount'] = int(args['protocolFeeAmount']) / (10 ** asset_info['1'].decimals)
+        if 'assetFeeAmount' in args:
+            trade['assetFeeAmount'] = int(args['assetFeeAmount']) / (10 ** tkn_buy.decimals) if tkn_buy else None
+        if 'hubAmountOut' in args:
+            trade['hubAmountOut'] = int(args['hubAmountOut']) / (10 ** asset_info['1'].decimals)
+        if 'hubAmountIn' in args:
+            trade['hubAmountIn'] = int(args['hubAmountIn']) / (10 ** asset_info['1'].decimals)
+        if 'assetFeeAmount' in trade:
+            trade['assetFee'] = float(trade['assetFeeAmount']) / (trade['amountOut'] + trade['assetFeeAmount'])
+        if 'hubAmountOut' in trade and trade['hubAmountOut'] > 0 and 'protocolFeeAmount' in trade:
             trade['protocolFee'] = float(trade['protocolFeeAmount']) / trade['hubAmountOut']
-        if trade['amountIn'] > 0:
+        if 'amountIn' in trade and trade['amountIn'] > 0 and 'assetFeeAmount' in trade:
             trade['asset_fee'] = float(trade['assetFeeAmount']) / (float(trade['amountOut']) + float(trade['assetFeeAmount']))
         trade['block_number'] = trade.pop('paraBlockHeight')
     return data_all
@@ -695,7 +904,7 @@ def get_current_omnipool_fees(
     if block_number is None:
         block_number = get_current_block_height()
     if asset_info is None:
-        asset_info = get_asset_info_by_ids(get_current_omnipool_assets())
+        asset_info = get_asset_info_by_ids(get_current_omnipool_asset_ids())
 
     asset_fee = settings.omnipool_asset_fee
     lrna_fee = settings.omnipool_lrna_fee
@@ -740,22 +949,23 @@ def get_current_omnipool_fees(
                 for arg in trade['args'].strip('}').strip('{').split(',')
             }
             block = trade['paraBlockHeight']
-            sell_id = args['assetIn']
-            buy_id = args['assetOut']
-            tkn_sell = asset_info[sell_id] if sell_id in asset_info else None
-            tkn_buy = asset_info[buy_id] if buy_id in asset_info else None
-            if tkn_sell and tkn_sell.id in asset_ids_remaining:
-                if tkn_sell.symbol not in lrna_fee.current and float(args['hubAmountOut']) > 0:
-                    lrna_fee.current[tkn_sell.symbol] = float(args['protocolFeeAmount']) / float(args['hubAmountOut'])
-                    lrna_fee.last_updated[tkn_sell.symbol] = block
-                    if args['assetIn'] in asset_fee.current:
-                        asset_ids_remaining.remove(args['assetIn'])
-            if tkn_buy and tkn_buy.id in asset_ids_remaining:
-                if tkn_buy.symbol not in asset_fee.current and float(args['amountIn']) > 0:
-                    asset_fee.current[tkn_buy.symbol] = float(args['assetFeeAmount']) / (float(args['amountOut']) + float(args['assetFeeAmount']))
-                    asset_fee.last_updated[tkn_buy.symbol] = block
-                    if tkn_buy.symbol in lrna_fee.current:
-                        asset_ids_remaining.remove(args['assetOut'])
+            if 'assetIn' in args and 'assetOut' in args:
+                sell_id = args['assetIn']
+                buy_id = args['assetOut']
+                tkn_sell = asset_info[sell_id] if sell_id in asset_info else None
+                tkn_buy = asset_info[buy_id] if buy_id in asset_info else None
+                if tkn_sell and tkn_sell.id in asset_ids_remaining:
+                    if tkn_sell.symbol not in lrna_fee.current and float(args['hubAmountOut']) > 0:
+                        lrna_fee.current[tkn_sell.symbol] = float(args['protocolFeeAmount']) / float(args['hubAmountOut'])
+                        lrna_fee.last_updated[tkn_sell.symbol] = block
+                        if args['assetIn'] in asset_fee.current:
+                            asset_ids_remaining.remove(args['assetIn'])
+                if tkn_buy and tkn_buy.id in asset_ids_remaining:
+                    if tkn_buy.symbol not in asset_fee.current and float(args['amountIn']) > 0:
+                        asset_fee.current[tkn_buy.symbol] = float(args['assetFeeAmount']) / (float(args['amountOut']) + float(args['assetFeeAmount']))
+                        asset_fee.last_updated[tkn_buy.symbol] = block
+                        if tkn_buy.symbol in lrna_fee.current:
+                            asset_ids_remaining.remove(args['assetOut'])
 
         queries += 1
         current_block -= blocks_per_query
@@ -777,7 +987,7 @@ def get_current_omnipool_router(block_number: int = None):
     if block_number is None:
         block_number = get_current_block_height()
     omnipool = get_current_omnipool(block_number)
-    stableswap_pools = get_current_stableswap_pools(block_number).values()
+    stableswap_pools = get_stableswap_pools(block_number).values()
 
     return OmnipoolRouter(
         exchanges=[
@@ -1186,3 +1396,136 @@ def download_acct_trades(asset_id: str, acct: str, path: str, min_block: int = N
 
     with open(f"{path}acct_swaps_{asset_id}_{acct}.json", "w") as f:
         json.dump(trades, f)
+
+
+def get_omnipool_liquidity_at_intervals(
+        interval: datetime.timedelta,
+        start_time: datetime.datetime,
+        asset_ids: str or list = None,
+        end_time: datetime.datetime = None,
+        max_workers: int = 10
+) -> dict[int, dict[str, dict]]:
+    """
+    Fetches historical liquidity using threaded batched GraphQL queries.
+    """
+    if end_time is None:
+        end_time = datetime.datetime.now()
+    if isinstance(asset_ids, str):
+        asset_ids = [asset_ids]
+    if asset_ids is None:
+        asset_ids = get_current_omnipool_asset_ids()
+    asset_info = get_asset_info_by_ids(asset_ids)
+
+    def _fetch_liquidity_batch(chunk):
+        """Worker to fetch liquidity for a batch of (ts, block, asset_id) tuples."""
+        local_results = []
+        query_parts = []
+
+        for i, (ts, block, asset_id) in enumerate(chunk):
+            query_parts.append(f"""
+                q_{i}: omnipoolAssetData(
+                    last: 1, 
+                    filter: {{
+                        assetId: {{equalTo: {asset_id}}}, 
+                        paraBlockHeight: {{equalTo: {block}}}
+                    }}
+                ) {{
+                    nodes {{
+                        assetId
+                        balances
+                        assetState
+                    }}
+                }}
+            """)
+
+        full_query = "query batch_liquidity { " + ",".join(query_parts) + " }"
+
+        response = query_indexer(url=URL_OMNIPOOL_STORAGE, query=full_query)
+
+        for i, (ts, block, asset_id) in enumerate(chunk):
+            asset_obj = asset_info[str(asset_id)]
+            try:
+                node = response['data'][f"q_{i}"]['nodes'][0]
+                hub_decimals = asset_info['1'].decimals if '1' in asset_info else 12
+
+                balance_d = int(node['balances']['d'][0]) if node.get('balances') else 0
+                state_d = node['assetState']['d'] if node.get('assetState') else [0, 0, 0]
+
+                record = {
+                    "liquidity": balance_d / 10 ** asset_obj.decimals,
+                    "LRNA": int(state_d[0]) / 10 ** hub_decimals,
+                    "shares": int(state_d[1]) / 10 ** asset_obj.decimals,
+                    "protocol_shares": int(state_d[2]) / 10 ** asset_obj.decimals,
+                }
+                local_results.append((ts, asset_obj.unique_id, record))
+
+            except (KeyError, IndexError, TypeError):
+                zero_record = {"liquidity": 0, "LRNA": 0, "shares": 0, "protocol_shares": 0}
+                local_results.append((ts, asset_obj.unique_id, zero_record))
+
+        return local_results
+
+    print("Resolving timestamps to block numbers (Threaded)...")
+
+    timestamps = []
+    curr = start_time
+    while curr <= end_time:
+        timestamps.append(curr)
+        curr += interval
+    timestamp_to_block = get_blocks_at_timestamps(timestamps)
+
+    print("Fetching liquidity snapshots (Threaded)...")
+
+    tasks = []
+    batch_size = 10
+    for ts, block in timestamp_to_block.items():
+        if block is None: continue
+        for asset_id in asset_ids:
+            tasks.append((ts, block, asset_id))
+
+    results_map = {ts: {} for ts in timestamps}
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [
+            executor.submit(_fetch_liquidity_batch, chunk)
+            for chunk in chunks(tasks, batch_size)
+        ]
+
+        for future in concurrent.futures.as_completed(futures):
+            try:
+                batch_results = future.result()
+                for (ts, unique_id, record) in batch_results:
+                    results_map[ts][unique_id] = record
+            except Exception as e:
+                print(f"Error in Phase 2 worker: {e}")
+
+    final_output = {}
+    for ts in sorted(results_map.keys()):
+        final_output[timestamp_to_block[ts]] = {'time': ts.strftime("%Y-%m-%d-%H:%M"), **results_map[ts]}
+
+    return final_output
+
+
+def get_dates_of_blocks(block_numbers: list[int]) -> dict[int, datetime.datetime]:
+    """Fetches the dates for a list of block numbers."""
+    block_to_date = {}
+    # check omnipool_block_cache.json
+    with open(Path(__file__).parent / 'cache' / 'omnipool_block_cache.json', 'r') as f:
+        block_cache = json.load(f)
+        dates = list(block_cache.keys())
+        blocks = list(block_cache.values())
+        for block in block_numbers:
+            # find the next lowest block in cache and return that date
+            for i in range(len(blocks)):
+                if int(block) <= blocks[i] and block not in block_to_date:
+                    date_str = dates[i - 1]
+                    block_to_date[block] = date_str
+                    break
+
+    return block_to_date
+
+
+def get_date_of_block(block_number: int) -> datetime.datetime:
+    """Fetches the date for a single block number."""
+    block_to_date = get_dates_of_blocks([block_number])
+    return block_to_date[block_number]
