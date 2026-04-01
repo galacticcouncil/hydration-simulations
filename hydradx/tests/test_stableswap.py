@@ -98,7 +98,7 @@ def test_swap_agent_changes():
     if new_agent.holdings['B'] + new_pool.liquidity['B'] != agent.holdings['B'] + pool.liquidity['B']:
         raise AssertionError('Agent holdings not updated properly.')
 
-    empty_agent = Agent()
+    empty_agent = Agent(enforce_holdings=True)
     fail_pool, fail_agent = simulate_swap(pool, empty_agent, tkn_sell='A', tkn_buy='B', sell_quantity=sell_amt)
     if not fail_pool.fail:
         raise AssertionError('Swap should have failed due to insufficient funds.')

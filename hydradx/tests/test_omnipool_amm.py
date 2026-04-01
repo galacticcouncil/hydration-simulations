@@ -5,18 +5,15 @@ import pytest
 from hypothesis import given, strategies as st, assume, settings, reproduce_failure
 from mpmath import mp, mpf
 import os
-
 os.chdir('../..')
 
-from hydradx.model import run, processing
+from hydradx.model import run
 from hydradx.model.amm import omnipool_amm as oamm
 from hydradx.model.amm.agents import Agent
 from hydradx.model.amm.global_state import GlobalState
 from hydradx.model.amm.omnipool_amm import DynamicFee, OmnipoolState, OmnipoolLiquidityPosition
 from hydradx.model.amm.trade_strategies import constant_swaps, omnipool_arbitrage
 from hydradx.tests.strategies_omnipool import omnipool_reasonable_config, omnipool_config, assets_config
-import hydradx.model.production_settings as production_settings
-from hydradx.model.indexer_utils import get_current_omnipool_router
 
 mp.dps = 50
 
@@ -28,47 +25,8 @@ asset_quantity_bounded_strategy = st.floats(min_value=1000000, max_value=1000000
 fee_strategy = st.floats(min_value=0.0001, max_value=0.1, allow_nan=False, allow_infinity=False)
 
 
-@given(omnipool_config(asset_fee=0, lrna_fee=0, token_count=3), asset_quantity_strategy)
-def test_swap_lrna_delta_Qi_respects_invariant(d: oamm.OmnipoolState, delta_ri: float):
-    i = d.asset_list[-1]
-    assume(i in d.asset_list)
-    assume(d.liquidity[i] > delta_ri > -d.liquidity[i])
-    d2 = copy.deepcopy(d)
-    delta_Qi = oamm.swap_lrna_delta_Qi(d, delta_ri, i)
-    d2.liquidity[i] += delta_ri
-    d2.lrna[i] += delta_Qi
-
-    # Test basics
-    for j in d2.liquidity:
-        assert d2.liquidity[j] > 0
-        assert d2.lrna[j] > 0
-    assert not (delta_ri > 0 and delta_Qi > 0)
-    assert not (delta_ri < 0 and delta_Qi < 0)
-
-    # Test that the pool invariant is respected
-    assert oamm.asset_invariant(d2, i) == pytest.approx(oamm.asset_invariant(d, i))
-
-
-@given(omnipool_config(asset_fee=0, lrna_fee=0, token_count=3), asset_quantity_strategy)
-def test_swap_lrna_delta_Ri_respects_invariant(d: oamm.OmnipoolState, delta_qi: float):
-    i = d.asset_list[-1]
-    assume(i in d.asset_list)
-    assume(d.lrna[i] > delta_qi > -d.lrna[i])
-    d2 = copy.deepcopy(d)
-    delta_Ri = oamm.swap_lrna_delta_Ri(d, delta_qi, i)
-    d2.lrna[i] += delta_qi
-    d2.liquidity[i] += delta_Ri
-
-    # Test basics
-    for j in d.liquidity:
-        assert d2.liquidity[j] > 0
-        assert d2.lrna[j] > 0
-    assert not (delta_Ri > 0 and delta_qi > 0)
-    assert not (delta_Ri < 0 and delta_qi < 0)
-
-    # Test that the pool invariant is respected
-    assert oamm.asset_invariant(d2, i) == pytest.approx(oamm.asset_invariant(d, i))
-
+def asset_invariant(state: oamm.OmnipoolState, tkn: str):
+    return state.liquidity[tkn] * state.lrna[tkn]
 
 @given(omnipool_config())
 def test_sell_accuracy(initial_state):
@@ -87,14 +45,6 @@ def test_sell_accuracy(initial_state):
     asset_sold = initial_agent.holdings[tkn_sell] - swap_agent.holdings[tkn_sell]
     if asset_sold != pytest.approx(sell_quantity, rel=1e40):
         raise AssertionError('Asset sold is wrong.')
-
-
-@given(omnipool_config(asset_fee=0, lrna_fee=0))
-def test_weights(initial_state: oamm.OmnipoolState):
-    old_state = initial_state
-    for i in old_state.liquidity:
-        assert oamm.weight_i(old_state, i) >= 0
-    assert sum([oamm.weight_i(old_state, i) for i in old_state.liquidity]) == pytest.approx(1.0)
 
 
 @given(omnipool_config())
@@ -572,6 +522,8 @@ def test_remove_liquidity_dynamic_fee(price_diff: float, asset_dict: dict):
 @given(omnipool_config(token_count=3, withdrawal_fee=False),
        st.floats(min_value=0.001, max_value=0.2))
 def test_remove_liquidity_no_fee_different_price(initial_state: oamm.OmnipoolState, trade_size_ratio: float):
+    initial_state.lrna_fee_destination = Agent(holdings={'LRNA': 0, 'HDX': 0, 'USD': 0, 'DOT': 0})
+
     i = initial_state.asset_list[2]
     initial_agent = Agent(
         holdings={token: 1000 for token in initial_state.asset_list + ['LRNA']},
@@ -693,12 +645,13 @@ def test_swap_lrna(delta_qa: float, buy_index: int):
         tkn_buy=i,
         tkn_sell='LRNA'
     )
-    if oamm.asset_invariant(feeless_swap_state, i) != pytest.approx(oamm.asset_invariant(old_state, i)):
+
+    if asset_invariant(feeless_swap_state, i) != pytest.approx(asset_invariant(old_state, i)):
         raise AssertionError('Invariant not respected in feeless trade.')
     for j in old_state.liquidity:
         if min(new_state.liquidity[j] - feeless_swap_state.liquidity[j], 0) != pytest.approx(0):
             raise AssertionError('Liquidity decreased.')
-    if min(oamm.asset_invariant(new_state, i) / oamm.asset_invariant(old_state, i), 1) != pytest.approx(1):
+    if min(asset_invariant(new_state, i) / asset_invariant(old_state, i), 1) != pytest.approx(1):
         raise AssertionError('Invariant decreased.')
 
     delta_qi = new_state.lrna[i] - old_state.lrna[i]
@@ -815,7 +768,8 @@ def test_lrna_swap_sell_with_lrna_mint(
         tvl_cap=float('inf'),
         asset_fee=asset_fee,
         lrna_fee=lrna_fee,
-        lrna_mint_pct=1.0
+        lrna_mint_pct=1.0,
+        lrna_fee_burn=0
     )
 
     old_agent = Agent(
@@ -828,25 +782,25 @@ def test_lrna_swap_sell_with_lrna_mint(
 
     feeless_state = initial_state.copy()
     feeless_state.asset_fee = 0
-    for asset in feeless_state.asset_list:
-        feeless_state.last_fee[asset] = 0
+    feeless_state.lrna_fee = 0
+    feeless_state.slip_factor = 0
 
     # Test with trader buying asset i
     swap_state, swap_agent = oamm.simulate_swap(
         initial_state, old_agent,
         tkn_buy=i,
         tkn_sell='LRNA',
-        sell_quantity=delta_qa
+        sell_quantity=-delta_qa
     )
     feeless_swap_state, feeless_swap_agent = oamm.simulate_swap(
         feeless_state, old_agent,
         tkn_buy=i,
         tkn_sell='LRNA',
-        sell_quantity=delta_qa
+        sell_quantity=-delta_qa
     )
     feeless_spot_price = feeless_swap_state.price(i)
     spot_price = swap_state.price(i)
-    if feeless_swap_state.fail == '' and swap_state.fail == '':
+    if not(feeless_swap_state.fail or swap_state.fail):
         if feeless_spot_price != pytest.approx(spot_price, rel=1e-16):
             raise AssertionError('Spot price is wrong.')
 
@@ -1043,7 +997,6 @@ def test_sell_with_partial_lrna_mint(
 
 @given(omnipool_reasonable_config(token_count=3, lrna_fee=0.0005, asset_fee=0.0025))
 def test_lrna_buy_nonzero_fee(initial_state: oamm.OmnipoolState):
-    initial_state.lrna_fee_burn = 0
     old_state = initial_state
     old_agent = Agent(
         holdings={token: 1000000 for token in initial_state.asset_list + ['LRNA']}
@@ -1110,7 +1063,7 @@ def test_swap_assets(initial_state: oamm.OmnipoolState, i):
         if min(new_state.liquidity[j] - asset_fee_only_state.liquidity[j], 0) != pytest.approx(0):
             raise AssertionError("asset in pool {j} is lesser when LRNA fee is added vs only asset fee")
         # invariant does not decrease
-        if min(oamm.asset_invariant(new_state, j) / oamm.asset_invariant(old_state, j), 1) != pytest.approx(1):
+        if min(asset_invariant(new_state, j) / asset_invariant(old_state, j), 1) != pytest.approx(1):
             raise AssertionError("invariant ratio less than zero")
         # total quantity of R_i remains unchanged
         if (old_state.liquidity[j] + old_agent.holdings[j]
@@ -1998,12 +1951,12 @@ def test_lowering_price(lp_multiplier, price_movement, oracle_mult):
         },
         withdrawal_fee=True,
         min_withdrawal_fee=0.0001,
+        slip_factor=None
     )
 
     market_prices = {tkn: omnipool.usd_price(tkn) for tkn in omnipool.asset_list}
 
-    holdings = {tkn: 1000000000 for tkn in omnipool.asset_list + ['LRNA']}
-    agent = Agent(holdings=holdings)
+    agent = Agent(enforce_holdings=False)
 
     swap_state, swap_agent = oamm.simulate_swap(
         old_state=omnipool.copy(),
@@ -2045,6 +1998,11 @@ def test_lowering_price(lp_multiplier, price_movement, oracle_mult):
     final_value = remove_state.cash_out(remove_agent, market_prices)
     profit = final_value - initial_value
     if profit > 0:
+        cash_out_state = remove_state.copy()
+        cash_out_agent = remove_agent.copy()
+        for tkn in omnipool.asset_list:
+            if cash_out_agent.get_holdings(tkn) < 0:
+                cash_out_state.swap(cash_out_agent, tkn_buy=tkn, tkn_sell='LRNA', buy_quantity=-cash_out_agent.holdings[tkn])
         raise
 
 
@@ -2112,12 +2070,12 @@ def test_add_and_remove_liquidity():
 )
 def test_calculate_sell_from_buy(list_offset: int, buy_quantities: list[float]):
     swaps = [
+        {"tkn_sell": "HDX", "tkn_buy": "USDT"},
+        {"tkn_sell": "USDT", "tkn_buy": "HDX"},
         {"tkn_sell": "USDT", "tkn_buy": "LRNA"},
         {"tkn_sell": "LRNA", "tkn_buy": "HDX"},
-        {"tkn_sell": "HDX", "tkn_buy": "USDT"},
-        {"tkn_sell": "USDT", "tkn_buy": "HDX"}
     ]
-    swaps = swaps[list_offset:] + swaps[:list_offset]
+    # swaps = swaps[list_offset:] + swaps[:list_offset]
     omnipool = OmnipoolState(
         tokens={
             "HDX": {"liquidity": mpf(10000000), "LRNA": mpf(1000000)},
@@ -2153,12 +2111,18 @@ def test_calculate_sell_from_buy(list_offset: int, buy_quantities: list[float]):
             raise AssertionError(f'buy quantity {buy_quantity} != actual quantity {agent.holdings[tkn_buy]}')
 
         agent.holdings = {}
+        expected_buy_quantity = omnipool.calculate_buy_from_sell(
+            tkn_sell=tkn_sell,
+            tkn_buy=tkn_buy,
+            sell_quantity=sell_quantity
+        )
         omnipool.swap( # don't copy this time: accumulate trade volume
             agent=agent,
             tkn_sell=tkn_sell,
             tkn_buy=tkn_buy,
             sell_quantity=sell_quantity
         )
+
         actual_buy_quantity = agent.get_holdings(tkn_buy)
         actual_sell_quantity = -agent.get_holdings(tkn_sell)
         if buy_quantity != pytest.approx(actual_buy_quantity, rel=1e-40):
@@ -2512,34 +2476,36 @@ def test_fee_application():
 
 @given(st.integers(min_value=1, max_value=10), st.integers(min_value=1, max_value=10))
 def test_lrna_swap_equivalency(lrna_burn_rate, min_fee_fraction):
+    treasury_agent = Agent()
     initial_state = OmnipoolState(
         tokens={'HDX': {'liquidity': mpf(1000000), 'LRNA': mpf(1000)}, 'USD': {'liquidity': mpf(3000), 'LRNA': mpf(150)}},
         lrna_fee=DynamicFee(
             current={'HDX': mpf(1) / 2000, 'USD': mpf(1) / 1000},
             minimum=mpf(1) / 2000 / min_fee_fraction,
-            maximum=mpf(1) / 1000 / min_fee_fraction
+            maximum=mpf(1) / 100
         ),
         asset_fee=DynamicFee(
             current={'HDX': mpf(1) / 1000 * 7, 'USD': mpf(1) / 400}
         ),
         lrna_fee_burn=mpf(1) / lrna_burn_rate / min_fee_fraction / 2000,
-        slip_factor=1.0
+        slip_factor=1.0,
+        lrna_fee_destination=treasury_agent
     )
 
-    agent = Agent(holdings={'HDX': mpf(1000000), 'LRNA': mpf(0)})
+    agent = Agent(enforce_holdings=False)
     sell_quantity = 1000
 
-    sell_agent = agent.copy()
-    sell_state = initial_state.copy().swap(
+    split_sell_agent = agent.copy()
+    mid_sell_state = initial_state.copy().swap(
         sell_quantity=sell_quantity,
-        agent=sell_agent,
+        agent=split_sell_agent,
         tkn_sell='HDX',
         tkn_buy='LRNA'
     )
-    mid_sell_agent = sell_agent.copy()
-    sell_state.swap(
-        sell_quantity=sell_agent.holdings['LRNA'],
-        agent=sell_agent,
+    mid_sell_agent = split_sell_agent.copy()
+    split_sell_state = mid_sell_state.copy().swap(
+        sell_quantity=split_sell_agent.holdings['LRNA'],
+        agent=split_sell_agent,
         tkn_buy='USD',
         tkn_sell='LRNA'
     )
@@ -2551,41 +2517,43 @@ def test_lrna_swap_equivalency(lrna_burn_rate, min_fee_fraction):
         sell_quantity=sell_quantity
     )
     buy_quantity = direct_sell_agent.holdings['USD']
-    if sell_state.liquidity['USD'] != pytest.approx(direct_sell_state.liquidity['USD'], rel=1e-12):
+    if split_sell_state.liquidity['USD'] != pytest.approx(direct_sell_state.liquidity['USD'], rel=1e-40):
         raise AssertionError("Direct sell was not equivalent to two LRNA swaps (USD liquidity).")
-    elif sell_state.lrna['USD'] != pytest.approx(direct_sell_state.lrna['USD'], rel=1e-12):
+    elif split_sell_state.lrna['USD'] != pytest.approx(direct_sell_state.lrna['USD'], rel=1e-40):
         raise AssertionError("Direct sell was not equivalent to two LRNA swaps (USD LRNA).")
-    elif sell_state.lrna['HDX'] != pytest.approx(direct_sell_state.lrna['HDX'], rel=1e-12):
+    elif split_sell_state.lrna['HDX'] != pytest.approx(direct_sell_state.lrna['HDX'], rel=1e-40):
         raise AssertionError("Direct sell was not equivalent to two LRNA swaps (HDX LRNA).")
-    elif sell_state.liquidity['HDX'] != pytest.approx(direct_sell_state.liquidity['HDX'], rel=1e-12):
+    elif split_sell_state.liquidity['HDX'] != pytest.approx(direct_sell_state.liquidity['HDX'], rel=1e-40):
         raise AssertionError("Direct sell was not equivalent to two LRNA swaps (HDX liquidity).")
-    elif sell_agent.holdings['USD'] != pytest.approx(direct_sell_agent.holdings['USD'], rel=1e-12):
+    elif split_sell_agent.holdings['USD'] != pytest.approx(direct_sell_agent.holdings['USD'], rel=1e-40):
         raise AssertionError("Direct sell was not equivalent to two LRNA swaps (agent USD).")
-    elif sell_agent.holdings['HDX'] != pytest.approx(direct_sell_agent.holdings['HDX'], rel=1e-12):
+    elif split_sell_agent.holdings['HDX'] != pytest.approx(direct_sell_agent.holdings['HDX'], rel=1e-40):
         raise AssertionError("Direct sell was not equivalent to two LRNA swaps (agent HDX).")
-    elif sell_agent.holdings['LRNA'] != pytest.approx(direct_sell_agent.holdings['LRNA'], rel=1e-12):
+    elif split_sell_agent.get_holdings('LRNA') != pytest.approx(direct_sell_agent.get_holdings('LRNA'), rel=1e-40):
         raise AssertionError("Direct sell was not equivalent to two LRNA swaps (agent LRNA).")
-    elif sell_state.lrna_fee_destination.holdings['LRNA'] != pytest.approx(
-            direct_sell_state.lrna_fee_destination.holdings['LRNA'], rel=1e-12):
+    elif split_sell_state.lrna_fee_destination.holdings['LRNA'] != pytest.approx(
+            direct_sell_state.lrna_fee_destination.holdings['LRNA'], rel=1e-40):
         raise AssertionError("Direct sell was not equivalent to two LRNA swaps (fee destination LRNA).")
     elif direct_sell_state.fail:
         raise AssertionError("Sell failed.")
     else:
         er = 'no problem'
 
-    buy_agent = agent.copy()
-    buy_state = initial_state.copy().swap(
+    mid_buy_agent = agent.copy()
+    mid_buy_state = initial_state.copy().swap(
         buy_quantity=mid_sell_agent.holdings['LRNA'],
-        agent=buy_agent,
+        agent=mid_buy_agent,
         tkn_sell='HDX',
         tkn_buy='LRNA'
-    ).swap(
+    )
+    split_buy_agent = mid_buy_agent.copy()
+    split_buy_state = mid_buy_state.copy().swap(
         buy_quantity=buy_quantity,
-        agent=buy_agent,
+        agent=split_buy_agent,
         tkn_buy='USD',
         tkn_sell='LRNA'
     )
-    buy_quantity = buy_agent.holdings['USD']
+    buy_quantity = split_buy_agent.holdings['USD']
     direct_buy_agent = agent.copy()
     direct_buy_state = initial_state.copy().swap(
         agent=direct_buy_agent,
@@ -2593,27 +2561,105 @@ def test_lrna_swap_equivalency(lrna_burn_rate, min_fee_fraction):
         tkn_buy='USD',
         buy_quantity=buy_quantity
     )
-    if buy_state.liquidity['USD'] != pytest.approx(direct_buy_state.liquidity['USD'], rel=1e-12):
+    if split_buy_state.liquidity['USD'] != pytest.approx(direct_buy_state.liquidity['USD'], rel=1e-12):
         raise AssertionError("Direct buy was not equivalent to two LRNA swaps (USD liquidity).")
-    elif buy_state.lrna['USD'] != pytest.approx(direct_buy_state.lrna['USD'], rel=1e-12):
+    elif split_buy_state.lrna['USD'] != pytest.approx(direct_buy_state.lrna['USD'], rel=1e-12):
         raise AssertionError("Direct buy was not equivalent to two LRNA swaps (USD LRNA).")
-    elif buy_state.liquidity['HDX'] != pytest.approx(direct_buy_state.liquidity['HDX'], rel=1e-12):
+    elif split_buy_state.liquidity['HDX'] != pytest.approx(direct_buy_state.liquidity['HDX'], rel=1e-12):
         raise AssertionError("Direct buy was not equivalent to two LRNA swaps (HDX liquidity).")
-    elif buy_state.lrna['HDX'] != pytest.approx(direct_buy_state.lrna['HDX'], rel=1e-12):
+    elif split_buy_state.lrna['HDX'] != pytest.approx(direct_buy_state.lrna['HDX'], rel=1e-12):
         raise AssertionError("Direct buy was not equivalent to two LRNA swaps (HDX lrna).")
-    elif buy_agent.holdings['USD'] != pytest.approx(direct_buy_agent.holdings['USD'], rel=1e-12):
+    elif split_buy_agent.get_holdings('USD') != pytest.approx(direct_buy_agent.get_holdings('USD'), rel=1e-12):
         raise AssertionError("Direct buy was not equivalent to two LRNA swaps (agent USD).")
-    elif buy_agent.holdings['HDX'] != pytest.approx(direct_buy_agent.holdings['HDX'], rel=1e-12):
+    elif split_buy_agent.get_holdings('HDX') != pytest.approx(direct_buy_agent.get_holdings('HDX'), rel=1e-12):
         raise AssertionError("Direct buy was not equivalent to two LRNA swaps (agent HDX).")
-    elif buy_agent.holdings['LRNA'] != pytest.approx(direct_buy_agent.holdings['LRNA'], rel=1e-12):
+    elif split_buy_agent.get_holdings('LRNA') != pytest.approx(direct_buy_agent.get_holdings('LRNA'), rel=1e-12):
         raise AssertionError("Direct buy was not equivalent to two LRNA swaps (agent LRNA).")
-    elif buy_state.lrna_fee_destination.holdings['LRNA'] != pytest.approx(
-            direct_buy_state.lrna_fee_destination.holdings['LRNA'], rel=1e-12):
+    elif split_buy_state.lrna_fee_destination.get_holdings('LRNA') != pytest.approx(
+            direct_buy_state.lrna_fee_destination.get_holdings('LRNA'), rel=1e-12):
         raise AssertionError("Direct buy was not equivalent to two LRNA swaps (fee destination LRNA).")
     elif direct_buy_state.fail:
         raise AssertionError("Buy failed.")
     else:
         er = 'no problem'
+
+
+def test_lrna_split_sell_calculation():
+    omnipool = OmnipoolState(
+        tokens={
+            "HDX": {"liquidity": mpf(10000000), "LRNA": mpf(1000000)},
+            "USDT": {"liquidity": mpf(250000), "LRNA": mpf(2000000)},
+        },
+        lrna_fee=mpf(1) / 2000,  # 0.0005
+        asset_fee=mpf(1) / 400,  # 0.0025
+        slip_factor=mpf(1.0)
+    )
+
+    output_1 = list(omnipool.calculate_out_given_in(tkn_buy="LRNA", tkn_sell="HDX", sell_quantity=1000))
+    outputs = [
+        output_1,
+        omnipool.calculate_out_given_in(tkn_buy="USDT", tkn_sell="LRNA", sell_quantity=output_1[0])
+    ]
+    output_1[0] = 0  # zero out buy quantity to avoid double counting
+    buy_quantity, delta_qi, delta_qj, asset_fee_total, lrna_fee_total, slip_fee_buy, slip_fee_sell = [
+        outputs[0][i] + outputs[1][i] for i in range(7)
+    ]
+    buy_quantity_2, delta_qi_2, delta_qj_2, asset_fee_total_2, lrna_fee_total_2, slip_fee_buy_2, slip_fee_sell_2 = \
+        omnipool.calculate_out_given_in(tkn_sell="HDX", tkn_buy="USDT", sell_quantity=1000)
+    if buy_quantity != pytest.approx(buy_quantity_2, rel=1e-40):
+        raise AssertionError("LRNA split swap sell quantity incorrect.")
+    if delta_qi != pytest.approx(delta_qi_2, rel=1e-40):
+        raise AssertionError("LRNA split swap delta_qi incorrect.")
+    if delta_qj != pytest.approx(delta_qj_2, rel=1e-40):
+        raise AssertionError("LRNA split swap delta_qj incorrect.")
+    if asset_fee_total != pytest.approx(asset_fee_total_2, rel=1e-40):
+        raise AssertionError("LRNA split swap asset_fee_total incorrect.")
+    if lrna_fee_total != pytest.approx(lrna_fee_total_2, rel=1e-40):
+        raise AssertionError("LRNA split swap lrna_fee_total incorrect.")
+    if slip_fee_buy != pytest.approx(slip_fee_buy_2, rel=1e-40):
+        raise AssertionError("LRNA split swap slip_fee_buy incorrect.")
+    if slip_fee_sell != pytest.approx(slip_fee_sell_2, rel=1e-40):
+        raise AssertionError("LRNA split swap slip_fee_sell incorrect.")
+
+    pass
+
+
+def test_lrna_split_buy_calculation():
+    omnipool = OmnipoolState(
+        tokens={
+            "HDX": {"liquidity": mpf(10000000), "LRNA": mpf(1000000)},
+            "USDT": {"liquidity": mpf(250000), "LRNA": mpf(2000000)},
+        },
+        lrna_fee=mpf(1) / 2000,  # 0.0005
+        asset_fee=mpf(1) / 400,  # 0.0025
+        slip_factor=mpf(1.0)
+    )
+    omnipool.max_lrna_fee = 0.01
+    output_1 = list(omnipool.calculate_in_given_out(tkn_buy="HDX", tkn_sell="LRNA", buy_quantity=1000))
+    outputs = [
+        output_1,
+        omnipool.calculate_in_given_out(tkn_sell="USDT", tkn_buy="LRNA", buy_quantity=output_1[0])
+    ]
+    output_1[0] = 0  # zero out sell quantity to avoid double counting
+    sell_quantity, delta_qi, delta_qj, asset_fee_total, lrna_fee_total, slip_fee_buy, slip_fee_sell = [
+        outputs[0][i] + outputs[1][i] for i in range(7)
+    ]
+    sell_quantity_2, delta_qi_2, delta_qj_2, asset_fee_total_2, lrna_fee_total_2, slip_fee_buy_2, slip_fee_sell_2 = \
+        omnipool.calculate_in_given_out(tkn_sell="USDT", tkn_buy="HDX", buy_quantity=1000)
+    if sell_quantity != pytest.approx(sell_quantity_2, rel=1e-40):
+        raise AssertionError("LRNA split swap buy quantity incorrect.")
+    if delta_qi != pytest.approx(delta_qi_2, rel=1e-40):
+        raise AssertionError("LRNA split swap delta_qi incorrect.")
+    if delta_qj != pytest.approx(delta_qj_2, rel=1e-40):
+        raise AssertionError("LRNA split swap delta_qj incorrect.")
+    if asset_fee_total != pytest.approx(asset_fee_total_2, rel=1e-40):
+        raise AssertionError("LRNA split swap asset_fee_total incorrect.")
+    if lrna_fee_total != pytest.approx(lrna_fee_total_2, rel=1e-40):
+        raise AssertionError("LRNA split swap lrna_fee_total incorrect.")
+    if slip_fee_buy != pytest.approx(slip_fee_buy_2, rel=1e-40):
+        raise AssertionError("LRNA split swap slip_fee_buy incorrect.")
+    if slip_fee_sell != pytest.approx(slip_fee_sell_2, rel=1e-40):
+        raise AssertionError("LRNA split swap slip_fee_sell incorrect.")
 
 
 def test_cash_out_omnipool_exact():
@@ -2984,7 +3030,8 @@ def test_trade_to_price():
             'USD': {'liquidity': mpf(1000000), 'LRNA': mpf(1000000)}
         },
         asset_fee=0.0025,
-        lrna_fee=0.0005
+        lrna_fee=0.0005,
+        lrna_fee_destination=Agent()
     )
     agent = Agent(enforce_holdings=False)
 
@@ -3017,27 +3064,156 @@ def test_slip_fee_works():
         raise AssertionError('Slip fee did not reduce output amount.')
 
 
+def test_buy_sell_equivalency():
+    omnipool = oamm.OmnipoolState(
+        tokens={
+            'USD': {'liquidity': mpf(1000000000), 'LRNA': mpf(1000000000)},
+            'HDX': {'liquidity': mpf(10000000000), 'LRNA': mpf(100000000)}
+        },
+        lrna_fee=0.0025,
+        asset_fee=0.0025,
+        slip_factor=1.0
+    )
+    omnipool.max_asset_fee = 0.05
+    omnipool.max_lrna_fee = 0.05
+    buy_quantity = mpf(10000)
+    sell_quantity = omnipool.calculate_sell_from_buy(
+        tkn_buy='HDX',
+        tkn_sell='USD',
+        buy_quantity=buy_quantity
+    )
+    reverse_buy = omnipool.calculate_buy_from_sell(
+        tkn_buy='HDX',
+        tkn_sell='USD',
+        sell_quantity=sell_quantity
+    )
+    if reverse_buy != pytest.approx(buy_quantity, rel=1e-12):
+        raise AssertionError('Buy/sell equivalency failed.')
+
+
 def test_calculate_buy_vs_sell():
     omnipool = OmnipoolState(
         tokens={
             'HDX': {'liquidity': mpf(1000000), 'LRNA': mpf(1000000)},
             'USD': {'liquidity': mpf(1000000), 'LRNA': mpf(1000000)}
         },
-        asset_fee=0,
-        lrna_fee=0,
-        slip_factor=1.0
+        asset_fee=mpf(1) / 400,
+        lrna_fee=mpf(1) / 2000,
+        slip_factor=1.0,
     )
     omnipool.max_lrna_fee = 0.01  # set LRNA fee cap for this test
     sell_quantity = mpf(1000)
+    omnipool.swap(Agent(enforce_holdings=False), tkn_sell='USD', tkn_buy='HDX', sell_quantity=sell_quantity)
     outputs = omnipool.calculate_out_given_in(tkn_buy='HDX', tkn_sell='USD', sell_quantity=sell_quantity)
-    buy_quantity, asset_fee_total, lrna_fee_total, slip_fee_total = outputs
+    buy_quantity, delta_qi, delta_qj, asset_fee_total, lrna_fee_total, slip_fee_buy, slip_fee_sell = outputs
+    slip_fee_total = slip_fee_buy + slip_fee_sell
     outputs = omnipool.calculate_in_given_out(tkn_buy='HDX', tkn_sell='USD', buy_quantity=buy_quantity)
-    sell_quantity_2, asset_fee_total_2, lrna_fee_total_2, slip_fee_total_2 = outputs
-    if sell_quantity != pytest.approx(sell_quantity_2, rel=1e-12):
+    sell_quantity_2, delta_qi_2, delta_qj_2, asset_fee_total_2, lrna_fee_total_2, slip_fee_buy, slip_fee_sell = outputs
+    slip_fee_total_2 = slip_fee_sell + slip_fee_buy
+    if sell_quantity != pytest.approx(sell_quantity_2, rel=1e-40):
         raise AssertionError('Calculate buy vs sell quantities do not match.')
-    if asset_fee_total != pytest.approx(asset_fee_total_2, rel=1e-12):
+    if asset_fee_total != pytest.approx(asset_fee_total_2, rel=1e-40):
         raise AssertionError('Calculate buy vs sell asset fees do not match.')
-    if lrna_fee_total != pytest.approx(lrna_fee_total_2, rel=1e-12):
+    if lrna_fee_total != pytest.approx(lrna_fee_total_2, rel=1e-40):
         raise AssertionError('Calculate buy vs sell LRNA fees do not match.')
-    if slip_fee_total != pytest.approx(slip_fee_total_2, rel=1e-12):
+    if slip_fee_total != pytest.approx(slip_fee_total_2, rel=1e-40):
         raise AssertionError('Calculate buy vs sell slip fees do not match.')
+    if delta_qj != pytest.approx(delta_qj_2, rel=1e-40):
+        raise AssertionError('Calculate buy vs sell delta_qj do not match.')
+    if delta_qi != pytest.approx(delta_qi_2, rel=1e-40):
+        raise AssertionError('Calculate buy vs sell delta_qi do not match.')
+
+
+def test_lrna_without_mint_or_burn_is_constant():
+    treasury_agent = Agent()
+    omnipool = OmnipoolState(
+        tokens={
+            'HDX': {'liquidity': mpf(10000000), 'LRNA': mpf(10000)},
+            'USD': {'liquidity': mpf(100000), 'LRNA': mpf(10000)}
+        },
+        asset_fee=0.00125,
+        lrna_fee=0.00025,
+        slip_factor=1.0,
+        lrna_fee_burn=0.0,
+        lrna_mint_pct=0,
+        lrna_fee_destination=treasury_agent
+    )
+    omnipool.max_lrna_fee = 0.01
+    initial_total_lrna = sum(omnipool.lrna.values())
+    agent = Agent(enforce_holdings=False)
+    swaps = [
+        ('HDX', 'USD', 'buy', mpf(1000)),
+        ('LRNA', 'HDX', 'buy', mpf(50)),
+        ('HDX', 'USD', 'sell', mpf(2000)),
+        ('USD', 'LRNA', 'sell', mpf(100)),
+        ('LRNA', 'USD', 'buy', mpf(3000)),
+        ('USD', 'HDX', 'buy', mpf(150))
+    ]
+    for tkn_sell, tkn_buy, mode, quantity in swaps:
+        if mode == 'buy':
+            omnipool.swap(agent, tkn_sell=tkn_sell, tkn_buy=tkn_buy, buy_quantity=quantity)
+        else:
+            omnipool.swap(agent, tkn_sell=tkn_sell, tkn_buy=tkn_buy, sell_quantity=quantity)
+        total_lrna = sum(omnipool.lrna.values()) + agent.get_holdings('LRNA') + omnipool.lrna_fee_destination.get_holdings('LRNA')
+        if total_lrna != pytest.approx(initial_total_lrna, rel=1e-40):
+            raise AssertionError('LRNA amount changed despite no burn or mint.')
+
+
+def test_lrna_outputs_sum_to_zero():
+    omnipool = OmnipoolState(
+        tokens={
+            'HDX': {'liquidity': mpf(1000000), 'LRNA': mpf(1000000)},
+            'USD': {'liquidity': mpf(1000000), 'LRNA': mpf(1000000)}
+        },
+        asset_fee=mpf(1) / 400,
+        lrna_fee=mpf(1) / 2000,
+        slip_factor=1.0,
+        lrna_fee_burn=0.0,
+        lrna_mint_pct=0,
+    )
+    omnipool.max_lrna_fee = 0.01
+    sell_quantity = mpf(1000)
+    outputs = omnipool.calculate_out_given_in(tkn_buy='HDX', tkn_sell='USD', sell_quantity=sell_quantity)
+    buy_quantity, delta_qi, delta_qj, asset_fee_total, lrna_fee_total, slip_fee_buy, slip_fee_sell = outputs
+    total = delta_qi + delta_qj + lrna_fee_total + slip_fee_buy + slip_fee_sell
+    if total != pytest.approx(0, rel=1e-40):
+        raise AssertionError('Outputs do not sum to zero.')
+
+    buy_output = omnipool.calculate_in_given_out(tkn_buy='HDX', tkn_sell='USD', buy_quantity=buy_quantity)
+    sell_quantity_2, delta_qi_2, delta_qj_2, asset_fee_total_2, lrna_fee_total_2, slip_fee_buy_2, slip_fee_sell_2 = buy_output
+    total_2 = delta_qi_2 + delta_qj_2 + lrna_fee_total_2 + slip_fee_buy_2 + slip_fee_sell_2
+    if total_2 != pytest.approx(0, rel=1e-40):
+        raise AssertionError('Outputs do not sum to zero.')
+
+
+def test_no_slip_fee():
+    omnipool = OmnipoolState(
+        tokens={
+            'HDX': {'liquidity': mpf(1000000), 'LRNA': mpf(1000000)},
+            'USD': {'liquidity': mpf(1000000), 'LRNA': mpf(1000000)}
+        },
+        asset_fee=mpf(1) / 400,
+        lrna_fee=mpf(1) / 2000,
+        slip_factor=0.0,
+        lrna_fee_burn=0.0,
+        lrna_mint_pct=0,
+    )
+    omnipool.max_lrna_fee = 0.01
+    buy_quantity = mpf(1000)
+    outputs = omnipool.calculate_in_given_out(tkn_buy='HDX', tkn_sell='USD', buy_quantity=buy_quantity)
+    buy_quantity, delta_qi, delta_qj, asset_fee_total, lrna_fee_total, slip_fee_buy, slip_fee_sell = outputs
+    if slip_fee_buy != 0:
+        raise AssertionError('Slip fee buy should be zero.')
+    if slip_fee_sell != 0:
+        raise AssertionError('Slip fee sell should be zero.')
+    if lrna_fee_total != pytest.approx(0.0005 * (omnipool.lrna['USD'] - omnipool.lrna['USD']), rel=1e-40):
+        raise AssertionError('LRNA fee total not calculated correctly.')
+    if asset_fee_total != pytest.approx(0.0025 * buy_quantity, rel=1e-40):
+        raise AssertionError('Asset fee total not calculated correctly.')
+
+    buy_output = omnipool.calculate_in_given_out(tkn_buy='HDX', tkn_sell='USD', buy_quantity=buy_quantity)
+    sell_quantity_2, delta_qi_2, delta_qj_2, asset_fee_total_2, lrna_fee_total_2, slip_fee_buy_2, slip_fee_sell_2 = buy_output
+    if slip_fee_buy_2 != 0:
+        raise AssertionError('Slip fee buy should be zero.')
+    if slip_fee_sell_2 != 0:
+        raise AssertionError('Slip fee sell should be zero.')

@@ -124,7 +124,8 @@ def constant_swaps(
             agent_id=agent_id,
             tkn_sell=sell_asset,
             tkn_buy=buy_asset,
-            sell_quantity=sell_quantity
+            sell_quantity=sell_quantity if sell_quantity > 0 else 0,
+            buy_quantity=-sell_quantity if sell_quantity < 0 else 0
         )
 
     return TradeStrategy(strategy, name=f'constant swaps (${sell_quantity})')

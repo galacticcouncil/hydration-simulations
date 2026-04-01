@@ -132,33 +132,9 @@ def omnipool_config(
         lrna_fee=None,
         asset_fee=None,
         tvl_cap_usd=0,
-        sub_pools: dict = None,
-        imbalance: float = None,
         withdrawal_fee=True
 ):
     asset_dict: dict = asset_dict or draw(assets_config(token_count))
-
-    sub_pool_instances: dict['str', ssamm.StableSwapPoolState] = {}
-    if sub_pools:
-        for i, (name, pool) in enumerate(sub_pools.items()):
-            base_token = list(asset_dict.keys())[i + 1]
-            sub_pool_instance = draw(stableswap_config(
-                asset_dict=pool['asset_dict'] if 'asset_dict' in pool else None,
-                token_count=pool['token_count'] if 'token_count' in pool else None,
-                amplification=pool['amplification'] if 'amplification' in pool else None,
-                trade_fee=pool['trade_fee'] if 'trade_fee' in pool else None,
-                base_token=base_token
-            ))
-            asset_dict.update({tkn: {
-                'liquidity': sub_pool_instance.liquidity[tkn],
-                'LRNA': (
-                    asset_dict[base_token]['LRNA'] * sub_pool_instance.liquidity[tkn]
-                    / asset_dict[base_token]['liquidity']
-                    if 'LRNA' in asset_dict[base_token] else
-                    asset_dict[base_token]['LRNA_price'] * sub_pool_instance.liquidity[tkn]
-                )
-            } for tkn in sub_pool_instance.asset_list})
-            sub_pool_instances[name] = sub_pool_instance
 
     test_state = oamm.OmnipoolState(
         tokens=asset_dict,
@@ -168,15 +144,6 @@ def omnipool_config(
         withdrawal_fee=withdrawal_fee
     )
 
-    for name, pool in sub_pool_instances.items():
-        test_state.create_sub_pool(
-            tkns_migrate=pool.asset_list,
-            unique_id=name,
-            amplification=pool.amplification,
-            trade_fee=pool.trade_fee
-        )
-
-    test_state.lrna_imbalance = -draw(asset_quantity_strategy)
     test_state.update()
     return test_state
 
