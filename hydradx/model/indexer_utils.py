@@ -9,7 +9,7 @@ from hydradx.model.amm.stableswap_amm import StableSwapPoolState
 import hydradx.model.production_settings as settings
 
 
-URL_UNIFIED_PROD = 'https://orca-main-aggr-indx.indexer.hydration.cloud/graphql'
+URL_UNIFIED_PROD = 'https://unified-main-aggr-indx.indexer.hydration.cloud/graphql'
 URL_OMNIPOOL_STORAGE = 'https://storage-dict-omnipool-hist-data-v2.orca.hydration.cloud/graphql'
 URL_STABLESWAP_STORAGE = 'https://storage-dict-stableswap-hist-data-v2.orca.hydration.cloud/graphql'
 URL_GENERIC_DATA = 'https://storage-dict-generic-hist-data-v2.orca.hydration.cloud/graphql'
@@ -796,7 +796,7 @@ def get_omnipool_trades(
     min_block: int = None,
     max_block: int = None,
 ):
-    extra_filter = 'name: {startsWith: "Omnipool", endsWith: "Executed}'
+    extra_filter = 'name: {startsWith: "Omnipool", endsWith: "Executed"}'
     return get_all_trades(asset_info, min_block, max_block, extra_filter)
 
 
