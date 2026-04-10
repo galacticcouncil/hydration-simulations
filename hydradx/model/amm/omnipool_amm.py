@@ -841,14 +841,11 @@ class OmnipoolState(Exchange):
                 return self.fail_transaction(f'insufficient LRNA in {tkn_sell}')
             if sell_quantity == float('inf'):
                 return self.fail_transaction('not enough liquidity to buy that much.')
-        elif sell_quantity and not buy_quantity:
+        else:
             buy_quantity, delta_qi, delta_qj, asset_fee_total, lrna_fee_total, slip_fee_buy, slip_fee_sell = \
             self.calculate_out_given_in(tkn_buy=tkn_buy, tkn_sell=tkn_sell, sell_quantity=sell_quantity)
             if math.isinf(buy_quantity):
                 return self.fail_transaction('not enough liquidity to buy that much.')
-        else:
-            # if both buy and sell quantities are specified, we allow that
-            pass
 
         if not agent.validate_holdings(tkn_sell, sell_quantity):
             return self.fail_transaction(f"Agent doesn't have enough {tkn_sell}")
