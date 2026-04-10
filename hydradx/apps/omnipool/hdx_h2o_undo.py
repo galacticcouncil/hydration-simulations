@@ -352,12 +352,37 @@ def find_hollar_trades():
     #     / 2
     # )
     lp_losses = 0
+    arb_gains = 0
     lp_holdings_pct = 1
+    lp_losses_to_arb = 0
     for i in range(slider_start_idx, slider_end_idx):
         daily_loss = percentage_series[i]
+        test_pool = omnipools[all_dates[i]].copy()
+        arbitrageur = Agent()
+        daily_lrna_price = test_pool.liquidity['HOLLAR'] / test_pool.lrna['HOLLAR']
+        lrna_loss = daily_loss * test_pool.lrna['HOLLAR']
+        test_pool.lrna['HOLLAR'] -= lrna_loss
+        test_pool.slip_factor = 0
+        hollar_buy = -test_pool.calculate_trade_to_price("HOLLAR", 1 / daily_lrna_price)
+        test_pool.swap(
+            arbitrageur,
+            tkn_sell='LRNA',
+            tkn_buy='HOLLAR',
+            buy_quantity=hollar_buy
+        )
+        arb_gain_today = arbitrageur.get_holdings('HOLLAR') + arbitrageur.get_holdings('LRNA') * daily_lrna_price
+        if arb_gain_today < 0:
+            print(f"negative arbitrage gain of {arb_gain_today:.2f} on {all_dates[i].strftime('%Y-%m-%d')}")
+            arb_gain_today = 0
+        arb_gains += arb_gain_today
+        lp_losses_to_arb += arb_gain_today * lp_shares / test_pool.shares['HOLLAR']
         lp_holdings_pct *= (1 - daily_loss / 2)
+
     lp_losses = (1 - lp_holdings_pct) * lp_shares / omnipools[all_dates[slider_start_idx]].shares['HOLLAR'] * omnipools[all_dates[slider_start_idx]].liquidity['HOLLAR']
+    lp_losses += lp_losses_to_arb
     st.metric("Estimated LP losses in dollars", f"{lp_losses:,.2f}")
+    st.metric("Estimated LP losses to arbitrage:" , f"{lp_losses_to_arb:,.2f}")
+    st.metric("Estimated arbitrage gains in dollars", f"{arb_gains:,.2f}")
 
     fig, ax = plt.subplots(figsize=(6.4, 3.36))
     ax.plot(list(hollar_percentage_per_day.keys()), [pct * 100 for pct in list(hollar_percentage_per_day.values())])
