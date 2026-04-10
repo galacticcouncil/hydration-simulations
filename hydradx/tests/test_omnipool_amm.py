@@ -2005,7 +2005,7 @@ def test_lowering_price(lp_multiplier, price_movement, oracle_mult):
                 cash_out_state.swap(cash_out_agent, tkn_buy=tkn, tkn_sell='LRNA', buy_quantity=-cash_out_agent.holdings[tkn])
             elif cash_out_agent.get_holdings(tkn) > 0:
                 cash_out_state.swap(cash_out_agent, tkn_sell=tkn, tkn_buy='LRNA', sell_quantity=cash_out_agent.holdings[tkn])
-        raise
+        raise AssertionError("Attacker was able to profit from adding and removing liquidity after a price drop.")
 
 
 def test_add_and_remove_liquidity():
@@ -3101,7 +3101,7 @@ def test_calculate_buy_vs_sell():
         },
         asset_fee=mpf(1) / 400,
         lrna_fee=mpf(1) / 2000,
-        slip_factor=1.0,
+        slip_factor=0,
     )
     omnipool.max_lrna_fee = 0.01  # set LRNA fee cap for this test
     sell_quantity = mpf(1000)
@@ -3213,7 +3213,7 @@ def test_no_slip_fee():
         raise AssertionError('Slip fee sell should be zero.')
     if (initial_omnipool.lrna['USD'] - omnipool.lrna['USD']) * mpf(1) / 2000 != pytest.approx(lrna_fee_total, rel=1e-40):
         raise AssertionError('LRNA fee total not calculated correctly.')
-    if asset_fee_total != pytest.approx(0.0025 * buy_quantity, rel=1e-40):
+    if asset_fee_total != pytest.approx(0.0025 * (asset_fee_total + buy_quantity), rel=1e-40):
         raise AssertionError('Asset fee total not calculated correctly.')
 
     buy_output = omnipool.calculate_in_given_out(tkn_buy='HDX', tkn_sell='USD', buy_quantity=buy_quantity)
