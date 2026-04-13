@@ -63,14 +63,13 @@ def _load_secrets_file() -> dict:
                 data = tomllib.load(handle)
             if not isinstance(data, dict):
                 continue
-            print(f"[cloud] Loaded secrets from {secrets_path}")
             return data
         except Exception as exc:
-            print(f"[cloud] Failed to read secrets file {secrets_path}: {exc}")
+            print(f"[cloud] Failed to read secrets file: {exc}")
             return {}
 
     missing_paths = ", ".join(str(p) for p in _secrets_paths())
-    print(f"[cloud] No secrets file found in configured paths: {missing_paths}")
+    print(f"[cloud] No secrets file found in configured paths.")
     return {}
 
 
