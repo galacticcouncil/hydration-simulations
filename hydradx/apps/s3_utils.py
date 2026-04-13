@@ -64,12 +64,12 @@ def _load_secrets_file() -> dict:
             if not isinstance(data, dict):
                 continue
             return data
-        except Exception as exc:
-            print(f"[cloud] Failed to read secrets file: {exc}")
+        except Exception:
+            print("[cloud] Failed to read secrets file.")
             return {}
 
     missing_paths = ", ".join(str(p) for p in _secrets_paths())
-    print(f"[cloud] No secrets file found in configured paths.")
+    print("[cloud] No secrets file found in configured paths.")
     return {}
 
 
@@ -83,8 +83,8 @@ def get_s3_config() -> dict | None:
     try:
         cfg = st.secrets.get("s3", {})
         bucket = cfg.get("bucket")
-    except Exception as exc:
-        print(f"[cloud] st.secrets unavailable: {exc}")
+    except Exception:
+        print("[cloud] st.secrets unavailable.")
 
     if not bucket:
         bucket = os.environ.get("S3_BUCKET")
@@ -136,8 +136,8 @@ def get_s3_client():
     except ImportError:
         st.warning("boto3 is not installed — cloud cache disabled. Run `pip install boto3`.")
         return None, None
-    except Exception as exc:
-        st.warning(f"Could not initialise S3 client — cloud cache disabled: {exc}")
+    except Exception:
+        st.warning("Could not initialise S3 client — cloud cache disabled.")
         return None, None
 
 
@@ -166,12 +166,12 @@ def download_file_from_s3(key: str, dest_path: Path, bucket: str | None = None) 
         response = client.get_object(Bucket=bucket_name, Key=key)
         body = response["Body"].read()
         dest_path.write_bytes(body)
-        print(f"[cloud] Downloaded s3://{bucket_name}/{key} -> {dest_path}")
+        print("[cloud] Downloaded object from S3.")
         return True
     except client.exceptions.NoSuchKey:
         return False
-    except Exception as exc:
-        print(f"[cloud] S3 download failed for {key}: {exc}")
+    except Exception:
+        print("[cloud] S3 download failed.")
         return False
 
 
@@ -189,10 +189,10 @@ def upload_file_to_s3(path: Path, key: str, content_type: str | None = None, buc
         guessed_type, _ = mimetypes.guess_type(str(path))
         final_type = content_type or guessed_type or "application/octet-stream"
         client.put_object(Bucket=bucket_name, Key=key, Body=body, ContentType=final_type)
-        print(f"[cloud] Uploaded {path} -> s3://{bucket_name}/{key}")
+        print("[cloud] Uploaded object to S3.")
         return True
-    except Exception as exc:
-        print(f"[cloud] S3 upload failed for {key}: {exc}")
+    except Exception:
+        print("[cloud] S3 upload failed.")
         return False
 
 
@@ -208,8 +208,8 @@ def list_s3_keys(prefix: str, bucket: str | None = None) -> list[str]:
         for page in paginator.paginate(Bucket=bucket_name, Prefix=prefix):
             for item in page.get("Contents", []):
                 keys.append(item["Key"])
-    except Exception as exc:
-        print(f"[cloud] S3 list failed for prefix {prefix}: {exc}")
+    except Exception:
+        print("[cloud] S3 list failed.")
     return keys
 
 
@@ -271,12 +271,12 @@ def download_from_s3(exchange: str, day: date) -> pd.DataFrame | None:
         response = client.get_object(Bucket=cfg["bucket"], Key=key)
         body = response["Body"].read().decode("utf-8")
         df = pd.read_csv(StringIO(body))
-        print(f"[cloud] Downloaded {exchange}/{day} from s3://{cfg['bucket']}/{key}")
+        print("[cloud] Downloaded object from S3.")
         return df
     except client.exceptions.NoSuchKey:
         return None
-    except Exception as exc:
-        print(f"[cloud] S3 download failed for {key}: {exc}")
+    except Exception:
+        print("[cloud] S3 download failed.")
         return None
 
 
@@ -290,7 +290,6 @@ def upload_to_s3(df: pd.DataFrame, exchange: str, day: date) -> None:
     try:
         body = df.to_csv(index=False).encode("utf-8")
         client.put_object(Bucket=cfg["bucket"], Key=key, Body=body, ContentType="text/csv")
-        print(f"[cloud] Uploaded {exchange}/{day} to s3://{cfg['bucket']}/{key}")
-    except Exception as exc:
-        print(f"[cloud] S3 upload failed for {key}: {exc}")
-
+        print("[cloud] Uploaded object to S3.")
+    except Exception:
+        print("[cloud] S3 upload failed.")
