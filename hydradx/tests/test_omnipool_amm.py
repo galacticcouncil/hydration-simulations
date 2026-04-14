@@ -2878,6 +2878,13 @@ def test_lrna_fee_burn(lrna_fee, burn_rate):
     if lrna_received_1 + lrna_fee_total_1 != pytest.approx(lrna_paid_out_1, rel=1e-20):
         raise AssertionError(f'LRNA fee not calculated correctly.')
     if lrna_burned_1 / lrna_fee_total_1 != pytest.approx(burn_rate, rel=1e-20):
+        print (f"lrna received: {lrna_received_1}")
+        print (f"lrna deposited: {lrna_deposited_1}")
+        print (f"lrna burned: {lrna_burned_1}")
+        print (f"lrna fee total: {lrna_fee_total_1}")
+        print (f"initial state lrna values: {initial_state.lrna}")
+        print (f"sell_tkn state lrna values: {sell_tkn_state.lrna}")
+        print (f"sell_tkn agent lrna holdings: {sell_tkn_agent.holdings['LRNA']}")
         raise AssertionError(f'LRNA burn rate not calculated correctly ({lrna_burned_1 / lrna_fee_total_1} != {burn_rate} (intended).')
 
     buy_lrna_state, buy_lrna_agent = oamm.simulate_swap(
