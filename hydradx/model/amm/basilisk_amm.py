@@ -130,7 +130,7 @@ class ConstantProductPoolState(Exchange):
         if self.liquidity[tkn_sell] + sell_quantity <= 0 or self.liquidity[tkn_buy] - buy_quantity <= 0:
             return self.fail_transaction('Not enough liquidity in the pool.')
     
-        if agent.holdings[tkn_sell] - sell_quantity < 0 or agent.holdings[tkn_buy] + buy_quantity < 0:
+        if not agent.validate_holdings(tkn_sell, sell_quantity) or agent.validate_holdings(tkn_buy, -buy_quantity):
             return self.fail_transaction('Agent has insufficient holdings.')
     
         agent.holdings[tkn_buy] += buy_quantity

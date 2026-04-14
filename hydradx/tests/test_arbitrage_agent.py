@@ -10,7 +10,7 @@ from hydradx.model.amm.arbitrage_agent import calculate_profit, calculate_arb_am
 from hydradx.model.amm.centralized_market import OrderBook, CentralizedMarket
 from hydradx.model.amm.omnipool_amm import OmnipoolState
 from hydradx.model.processing import get_omnipool_data_from_file, get_orderbooks_from_file
-from hydradx.model.processing import load_omnipool
+from hydradx.model.processing import load_state
 from mpmath import mp, mpf
 
 from hydradx.tests.utils import find_test_directory
@@ -822,7 +822,7 @@ def test_stableswap_router_arbitrage():
     # router = get_current_omnipool_router()
     # save_omnipool(omnipool)
     archive_path = os.path.join(find_test_directory(), 'archive')
-    router = load_omnipool(archive_path)
+    router = load_state(archive_path)
     omnipool = router.exchanges['omnipool']
     fourpool = router.exchanges['4-Pool']
     input_path = os.path.join(find_test_directory(), 'data')

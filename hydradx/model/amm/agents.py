@@ -5,13 +5,13 @@ class Agent:
     unique_id: str = ''
 
     def __init__(self,
-                 holdings: dict[str: float] = None,
-                 share_prices: dict[str: float] = None,
-                 delta_r: dict[str: float] = None,
+                 holdings: dict[str, float] = None,
+                 share_prices: dict[str, float] = None,
+                 delta_r: dict[str, float] = None,
                  trade_strategy: any = None,
                  unique_id: str = 'agent',
-                 nfts: dict[str: any] = None,
-                 enforce_holdings: bool = True,
+                 nfts: dict[str, any] = None,
+                 enforce_holdings: bool = None,
                  immune_to_fees: bool = False
                  ):
         """
@@ -34,7 +34,13 @@ class Agent:
         self.asset_list = list(self.holdings.keys())
         self.unique_id = unique_id
         self.nfts = nfts or {}
-        self.enforce_holdings = enforce_holdings
+        if enforce_holdings is not None:
+            self.enforce_holdings = enforce_holdings
+        else:
+            if holdings is None:
+                self.enforce_holdings = False
+            else:
+                self.enforce_holdings = True
         self.immune_to_fees = immune_to_fees
 
     def __repr__(self):

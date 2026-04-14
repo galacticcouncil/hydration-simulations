@@ -12,7 +12,7 @@ sys.path.append(project_root)
 from hydradx.model.amm.omnipool_amm import OmnipoolState
 from hydradx.model.amm.agents import Agent
 from hydradx.model.plot_utils import color_gradient
-from hydradx.model.indexer_utils import get_current_omnipool, get_omnipool_trades, get_current_omnipool_assets, \
+from hydradx.model.indexer_utils import get_current_omnipool, get_omnipool_trades, get_current_omnipool_asset_ids, \
     get_asset_info_by_ids
 
 st.markdown("""

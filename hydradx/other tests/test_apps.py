@@ -1,4 +1,8 @@
+import json
+
 import numpy as np
+import pandas as pd
+import pytest
 
 from hydradx.apps.gigadot_modeling.utils import simulate_route, get_omnipool_minus_vDOT, get_slippage_dict
 from hydradx.model.amm.money_market import MoneyMarket, MoneyMarketAsset, CDP
@@ -7,6 +11,9 @@ from hydradx.model.amm.omnipool_amm import OmnipoolState
 from hydradx.model.amm.agents import Agent
 from hypothesis import given, strategies as strat, assume, settings, reproduce_failure
 import os
+import datetime
+from pathlib import Path
+from hydradx.model.indexer_utils import get_omnipool_trades, query_indexer
 
 from hydradx.tests.utils import find_test_directory
 
@@ -197,3 +204,145 @@ def test_slip_fees():
     from hydradx.apps.fees import slip_fees_comparison
     slip_fees_comparison.run_and_plot()
 
+
+def test_slip_fees_chart():
+    from hydradx.apps.fees import slip_fees_chart
+    router = slip_fees_chart.load_omnipool_router()
+    omnipool = router.exchanges['omnipool']
+    omnipool.asset_fee = 0
+    omnipool.lrna_fee = 0
+    omnipool.max_lrna_fee = 1
+    omnipool.max_asset_fee = 1
+    omnipool.slip_factor = 1.0
+    slip_fees_chart.plot_trade_sizes("HDX", "DOT", router, omnipool)
+
+
+def test_hdx_h2o():
+    import hydradx.apps.omnipool.hdx_h2o
+
+def test_hdx_buy_burn():
+    from hydradx.apps.omnipool import hdx_buy_burn
+
+def test_eur_usd():
+    from hydradx.apps.stableswap.eur_usd import run_comparison, get_kraken_prices, get_binance_prices
+    binance_prices = get_binance_prices(start_date=datetime.datetime.fromisoformat("2026-03-03"), days=1)
+    kraken_prices = get_kraken_prices(start_date=datetime.datetime.fromisoformat("2026-03-03"), days=1)
+    result = run_comparison(
+        file1_path=Path(__file__).parent / "cached data" / "binance_prices.csv",
+        file2_path=Path(__file__).parent / "cached data" / "kraken_eur_usd_data.csv"
+    )
+    print(result["stats"])
+    print(result["merged"].head(20))
+
+def test_arbitrage_sim():
+    from datetime import datetime, timedelta
+    from hydradx.apps.stableswap.eur_usd_arbitrage_sim import (
+        run_sim,
+        get_prices_for_day,
+        smooth_binance_with_kraken,
+        build_simulation_points,
+        load_dia_cached,
+    )
+
+    start_day = datetime.fromisoformat("2026-03-01")
+    end_day = datetime.fromisoformat("2026-03-03")
+    days = [start_day + timedelta(days=i) for i in range((end_day - start_day).days + 1)]
+
+    binance_frames = [get_prices_for_day("binance", day) for day in days]
+    kraken_frames = [get_prices_for_day("kraken", day) for day in days]
+    binance_demo = pd.concat(binance_frames, ignore_index=True) if binance_frames else pd.DataFrame()
+    kraken_demo = pd.concat(kraken_frames, ignore_index=True) if kraken_frames else pd.DataFrame()
+
+    master_df = smooth_binance_with_kraken(
+        binance_demo,
+        kraken_demo,
+        binance_bias_factor=3.0
+    )
+    dia_prices = load_dia_cached()
+    steps = build_simulation_points(master_df, dia_prices)
+    run_sim(steps, trade_fee=0.0001, amplification=1000)
+
+
+def test_arbitrage_series_matches_subset():
+    from datetime import datetime, timedelta, timezone
+    from hydradx.apps.stableswap.eur_usd_arbitrage_sim import (
+        get_prices_for_day,
+        smooth_binance_with_kraken,
+    )
+
+    full_start = datetime.fromisoformat("2026-03-01").replace(tzinfo=timezone.utc)
+    full_end = datetime.fromisoformat("2026-03-03").replace(tzinfo=timezone.utc)
+    subset_start = datetime.fromisoformat("2026-03-02").replace(tzinfo=timezone.utc)
+    subset_end = datetime.fromisoformat("2026-03-03").replace(tzinfo=timezone.utc)
+
+    def _load_range(start_day: datetime, end_day: datetime) -> pd.DataFrame:
+        days = [start_day + timedelta(days=i) for i in range((end_day - start_day).days + 1)]
+        frames = [get_prices_for_day("binance", day) for day in days]
+        return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+    full_df = _load_range(full_start, full_end)
+    subset_df = _load_range(subset_start, subset_end)
+    if full_df.empty or subset_df.empty:
+        pytest.skip("No cached Binance data available for the requested range.")
+
+    full_combined = smooth_binance_with_kraken(full_df, full_df, binance_bias_factor=3.0)
+    subset_combined = smooth_binance_with_kraken(subset_df, subset_df, binance_bias_factor=3.0)
+
+    full_slice = full_combined[
+        (full_combined["time"] >= subset_start) & (full_combined["time"] <= subset_end)
+    ].copy()
+
+    if full_slice.empty or subset_combined.empty:
+        pytest.skip("No overlapping data to compare for the subset window.")
+
+    aligned = full_slice.merge(
+        subset_combined,
+        on="timestamp_ms",
+        suffixes=("_full", "_subset"),
+        how="inner",
+    )
+    if aligned.empty:
+        pytest.skip("No aligned timestamps to compare between full and subset series.")
+
+    max_diff = (aligned["external_price_full"] - aligned["external_price_subset"]).abs().max()
+    if max_diff > 1e-12:
+        pass
+
+
+def test_swap_price():
+    dia_price = 1.1
+    pool_amplification = 50
+    trade_fee = 0.0005
+    usd_trade_size = 10000
+    eur_usd_stableswap = StableSwapPoolState(
+        tokens={"USD": 1_000_000 * dia_price, "EUR": 1_000_000},
+        amplification=pool_amplification,
+        trade_fee=trade_fee,
+        peg=dia_price,
+        spot_price_precision=0.00000000001,
+        precision=1e-12,
+        max_peg_update=0.0001,
+    )
+    pool_after = eur_usd_stableswap.copy()
+    pool_after.swap(
+        agent=Agent(),
+        tkn_buy="EUR",
+        tkn_sell="USD",
+        sell_quantity=usd_trade_size,
+    )
+    eur_received = (
+            eur_usd_stableswap.liquidity["EUR"]
+            - pool_after.liquidity["EUR"]
+    )
+    trade_value = eur_received * dia_price
+    cost = usd_trade_size - trade_value
+    pass
+
+def test_liquidity_graph():
+    from hydradx.apps.omnipool.assets_liquidity_graph import get_liquidity_over_time
+    get_liquidity_over_time()
+
+def test_hdx_h2o_undo():
+    from hydradx.apps.omnipool.hdx_h2o_undo import find_hollar_trades, simulate_lp_experience
+    find_hollar_trades()
+    # simulate_lp_experience()

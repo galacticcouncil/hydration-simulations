@@ -9,7 +9,7 @@ from hydradx.model.amm.agents import Agent
 from hydradx.model.amm.omnipool_amm import OmnipoolState, value_assets, DynamicFee
 from hydradx.tests.strategies_omnipool import reasonable_market_dict, omnipool_reasonable_config, reasonable_holdings
 from hydradx.tests.strategies_omnipool import reasonable_pct, asset_number_strategy
-from hydradx.model.processing import save_omnipool, load_omnipool
+from hydradx.model.processing import save_state, load_state
 from hydradx.model.indexer_utils import get_current_omnipool_router
 from hydradx.tests.utils import find_test_directory
 
@@ -298,8 +298,8 @@ def test_cash_out_accuracy(omnipool: oamm.OmnipoolState, share_price_ratio, lp_i
 def test_save_load():
     path = find_test_directory()
     omnipool_router = get_current_omnipool_router(block_number=8450000)
-    save_omnipool(omnipool_router, path=path)
-    omnipool_router2 = load_omnipool(path=path)
+    save_state(omnipool_router, path=path)
+    omnipool_router2 = load_state(path=path)
     for exchange_id in omnipool_router2.exchanges:
         if repr(omnipool_router2.exchanges[exchange_id]) != repr(omnipool_router.exchanges[exchange_id]):
             raise AssertionError('Save and load failed')
