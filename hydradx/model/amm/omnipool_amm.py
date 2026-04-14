@@ -67,7 +67,7 @@ class OmnipoolState(Exchange):
                  lrna_mint_pct: float = 1.0,
                  unique_id: str = 'omnipool',
                  lrna_fee_burn: float = 0.5,
-                 lrna_fee_destination: Agent = Agent(),
+                 lrna_fee_destination: Agent | None = None,
                  dynamic_fee_precision: int = 20,
                  slip_factor: float = None
                  ):
@@ -170,6 +170,8 @@ class OmnipoolState(Exchange):
         if lrna_fee_burn > 1 or lrna_fee_burn < 0:
             raise ValueError('lrna_fee_burn must be >= 0 and <= 1')
 
+        if lrna_fee_destination is None:
+            lrna_fee_destination = Agent()
         self.lrna_fee_destination = lrna_fee_destination
         self.dynamic_fee_precision = dynamic_fee_precision
 
