@@ -2878,7 +2878,7 @@ def test_lrna_fee_burn(lrna_fee, burn_rate):
     if lrna_received_1 + lrna_fee_total_1 != pytest.approx(lrna_paid_out_1, rel=1e-20):
         raise AssertionError(f'LRNA fee not calculated correctly.')
     if lrna_burned_1 / lrna_fee_total_1 != pytest.approx(burn_rate, rel=1e-20):
-        raise AssertionError(f'LRNA burn rate not calculated correctly.')
+        raise AssertionError(f'LRNA burn rate not calculated correctly ({lrna_burned_1 / lrna_fee_total_1} != {burn_rate} (intended).')
 
     buy_lrna_state, buy_lrna_agent = oamm.simulate_swap(
         old_state=initial_state,
