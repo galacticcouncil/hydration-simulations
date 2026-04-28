@@ -8,7 +8,7 @@ scipy>=1.10.0-rc1
 ipywidgets>=7.5.1
 jupyter>=1.0.0
 pathos
-hypothesis>=6.127.0
+hypothesis>=6.151.13
 pytest~=7.4.2
 ipdb
 sympy
