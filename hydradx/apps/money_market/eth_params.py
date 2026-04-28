@@ -5,7 +5,8 @@ import numpy as np
 from matplotlib import pyplot as plt
 import sys, os, math
 import streamlit as st
-import time
+import time, datetime
+from pathlib import Path
 
 from streamlit import form_submit_button
 
@@ -17,11 +18,13 @@ from hydradx.model.amm.omnipool_router import OmnipoolRouter
 from hydradx.model.amm.money_market import MoneyMarket, MoneyMarketAsset, CDP
 from hydradx.model.amm.stableswap_amm import StableSwapPoolState
 from hydradx.model.amm.trade_strategies import liquidate_cdps, schedule_swaps, omnipool_arbitrage, sell_all
-from hydradx.model.processing import get_current_money_market, save_money_market, load_money_market as load_money_market_from_file
+from hydradx.model.processing import save_money_market, load_money_market as load_money_market_from_file, \
+     save_state, load_state
 from hydradx.model.amm.agents import Agent
 from hydradx.model.indexer_utils import get_current_omnipool_router, get_current_block_height
-from hydradx.apps.display_utils import get_distribution, one_line_markdown, bell_distribute
+from hydradx.apps.display_utils import get_distribution, one_line_markdown
 from hydradx.model.amm.fixed_price import FixedPriceExchange
+from hydradx.model.indexer_utils import get_current_money_market
 
 st.markdown("""
     <style>
@@ -49,22 +52,30 @@ print("App start")
 
 @st.cache_data(ttl=3600, show_spinner="Loading Omnipool data (cached for 1 hour)...")
 def load_omnipool_router() -> tuple[OmnipoolRouter, str]:
-    block_number = get_current_block_height() - 10000
-    # Add timestamp to verify caching
-    import datetime
     cache_time = datetime.datetime.now().strftime("%H:%M:%S")
-    print(f"Cache miss! Loading omnipool at {cache_time}")
-    load_router = get_current_omnipool_router(block_number)
+    load_path = Path(__file__).parent / "archive"
+    if load_path.exists():
+        load_router = load_state(path=load_path)
+    else:
+        block_number = get_current_block_height() - 1000
+        # Add timestamp to verify caching
+        print(f"Cache miss! Loading omnipool at {cache_time}")
+        load_router = get_current_omnipool_router(block_number)
+        save_state(load_router, filename=f"omnipool_router_savefile.json")
+
     load_omnipool = load_router.exchanges['omnipool']
-    if block_number is None:
-        block_number = load_omnipool.time_step
+
+    # if block_number is None:
+    block_number = load_omnipool.time_step
     stableswap_pools = [
         pool for pool in load_router.exchanges.values()
         if isinstance(pool, StableSwapPoolState)
         and min(pool.liquidity.values()) > 0
     ]
+
+    pass
     usd_price_lrna = (
-        1 / load_omnipool.lrna_price('2-Pool-Stbl') / 1.01  # fudging this because I can't get the stableswap pool shares
+        1 / load_omnipool.lrna_price('HOLLAR')
     )
     load_omnipool.add_token(
         'USD', liquidity = usd_price_lrna * 1000000, lrna=1000000
@@ -306,12 +317,12 @@ for exchange in initial_stableswaps:
                 start_price[tkn] = exchange.price(tkn, start_price[priced_tokens[0]]) * start_price[priced_tokens[0]]
 
 st.session_state.setdefault("time_steps", 20)
-st.session_state.setdefault("include_original_cdps", True)
+st.session_state.setdefault("include_original_cdps", False)
 st.session_state.setdefault("resolution", 20)
-st.session_state.setdefault("add_collateral", {"HDX": 1_000_000})
+st.session_state.setdefault("add_collateral", {"2-Pool-HUSDe": 1_000_000})
 st.session_state.setdefault("add_debt", {"USDT": 600_000})
 st.session_state.setdefault("price_change", {
-    "HDX": -20
+    '2-Pool-HUSDe': -20
 })
 st.session_state.setdefault("number_of_cdps", 20)
 st.session_state.setdefault("assets", [asset.copy() for asset in initial_mm.assets.values()])
@@ -322,6 +333,8 @@ st.session_state["money_market"] = rebuild_money_market()
 st.session_state.setdefault("asset_changed", False)
 st.session_state["refresh_graphs"] = True
 st.session_state["run_simulation"] = False
+st.session_state["toxic_debt_view"] = False
+st.session_state["toxic_debt_breakdown"] = False
 
 with st.sidebar:
     def sidebar_builder():
@@ -340,7 +353,7 @@ with st.sidebar:
         def change_param_form(
                 key: str,
                 title: str,
-                tokens: list[str] or Callable,
+                tokens: list[str] | Callable,
                 default_value: float,
                 default_token: str,
                 min_value: float,
@@ -567,7 +580,7 @@ with st.sidebar:
             key="add_collateral",
             title="Add collateral",
             tokens=st.session_state["money_market"].asset_list,
-            default_token="HDX",
+            default_token='2-Pool-HUSDe',
             default_value=1_000_000,
             min_value=-1_000_000_000,
             max_value=1_000_000_000,
@@ -698,6 +711,8 @@ def run_app():
             if price_tkn == "HDX":
                 # there is no external market for HDX, so we set the price in the money market to the omnipool price
                 price_paths[price_tkn][state.time_step] = state.pools['router'].exchanges['omnipool'].usd_price('HDX')
+            elif price_tkn == '2-Pool-HUSDe':
+                pass
             for pool in relevant_pools:
                 if isinstance(pool, FixedPriceExchange):
                     pool.prices[price_tkn] = price_paths[price_tkn][state.time_step]
@@ -874,7 +889,7 @@ def run_app():
     plot_agent_holdings('liquidator')
     # plot_agent_holdings('arbitrageur')
 
-    @st.fragment
+    # @st.fragment
     def plot_toxic_debt():
         with (st.expander(f"Toxic debt")):
             st.radio(
