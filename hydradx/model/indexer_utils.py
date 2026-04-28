@@ -6,6 +6,7 @@ from pathlib import Path
 from hydradx.model.amm.omnipool_amm import OmnipoolState, DynamicFee
 from hydradx.model.amm.omnipool_router import OmnipoolRouter
 from hydradx.model.amm.stableswap_amm import StableSwapPoolState
+from hydradx.model.amm.money_market import MoneyMarket, MoneyMarketAsset, CDP
 import hydradx.model.production_settings as settings
 
 
@@ -191,7 +192,7 @@ def get_block_at_timestamp(
 
 def get_hollar_liquidity_at(block_number=None):
     query = f"""
-        query MyQuery {{
+        query HollarLiquidity {{
           omnipoolAssetHistoricalData(
             filter: {{
               assetId: {{equalTo: "0x531a654d1696ed52e7275a8cede955e82620f99a"}},
@@ -203,7 +204,6 @@ def get_hollar_liquidity_at(block_number=None):
             nodes {{
               paraBlockHeight
               freeBalance
-              tvlInRefAssetNorm
               assetHubReserve
               assetShares
             }}
@@ -868,18 +868,18 @@ def get_all_trades(
             buy_id = str(args['assetOut'])
             if sell_id not in asset_info or buy_id not in asset_info:
                 continue
-            tkn_sell = asset_info[sell_id]
+            tkn_sell: AssetInfo = asset_info[sell_id]
             tkn_buy = asset_info[buy_id]
             trade['assetIn'] = tkn_sell.unique_id
             trade['assetOut'] = tkn_buy.unique_id
-        if 'amountIn' in args:
-            trade['amountIn'] = int(args['amountIn']) / (10 ** tkn_sell.decimals) if tkn_sell else None
-        if 'amountOut' in args:
-            trade['amountOut'] = int(args['amountOut']) / (10 ** tkn_buy.decimals) if tkn_buy else None
+            if 'amountIn' in args:
+                trade['amountIn'] = int(args['amountIn']) / (10 ** tkn_sell.decimals) if tkn_sell else None
+            if 'amountOut' in args:
+                trade['amountOut'] = int(args['amountOut']) / (10 ** tkn_buy.decimals) if tkn_buy else None
+            if 'assetFeeAmount' in args:
+                trade['assetFeeAmount'] = int(args['assetFeeAmount']) / (10 ** tkn_buy.decimals) if tkn_buy else None
         if 'protocolFeeAmount' in args:
             trade['protocolFeeAmount'] = int(args['protocolFeeAmount']) / (10 ** asset_info['1'].decimals)
-        if 'assetFeeAmount' in args:
-            trade['assetFeeAmount'] = int(args['assetFeeAmount']) / (10 ** tkn_buy.decimals) if tkn_buy else None
         if 'hubAmountOut' in args:
             trade['hubAmountOut'] = int(args['hubAmountOut']) / (10 ** asset_info['1'].decimals)
         if 'hubAmountIn' in args:
@@ -894,7 +894,7 @@ def get_all_trades(
     return data_all
 
 def get_current_omnipool_fees(
-    asset_info: dict[str: AssetInfo] = None,
+    asset_info: dict[str, AssetInfo] = None,
     block_number: int = None
 ) -> tuple[DynamicFee, DynamicFee]:
 
@@ -1401,7 +1401,7 @@ def download_acct_trades(asset_id: str, acct: str, path: str, min_block: int = N
 def get_omnipool_liquidity_at_intervals(
         interval: datetime.timedelta,
         start_time: datetime.datetime,
-        asset_ids: str or list = None,
+        asset_ids: str | list = None,
         end_time: datetime.datetime = None,
         max_workers: int = 10
 ) -> dict[int, dict[str, dict]]:
@@ -1529,3 +1529,286 @@ def get_date_of_block(block_number: int) -> datetime.datetime:
     """Fetches the date for a single block number."""
     block_to_date = get_dates_of_blocks([block_number])
     return block_to_date[block_number]
+
+
+def get_current_money_market(
+    rpc_url: str = "https://rpc.hydradx.cloud",
+    min_block: int = 6468413,
+    page_size: int = 5000,
+    max_workers: int = 16,
+    allow_partial: bool = False,
+):
+    import threading
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from web3 import Web3
+
+    from .abi.ui_pool_data_provider import (
+        UI_POOL_DATA_PROVIDER_ABI,
+        UI_POOL_DATA_PROVIDER_ADDRESS,
+    )
+
+    POOL_ADDRESS_PROVIDER_ADDRESS = "0xf3Ba4D1b50f78301BDD7EAEa9B67822A15FCA691"
+    emode_labels = ["None", "Stablecoins", "DOT", "ETH"]
+
+    thread_local = threading.local()
+
+    def get_w3_and_contract():
+        if not hasattr(thread_local, "w3"):
+            w3 = Web3(Web3.HTTPProvider(rpc_url, request_kwargs={"timeout": 60}))
+            if not w3.is_connected():
+                raise RuntimeError(f"Could not connect to {rpc_url}")
+
+            contract = w3.eth.contract(
+                address=Web3.to_checksum_address(UI_POOL_DATA_PROVIDER_ADDRESS),
+                abi=UI_POOL_DATA_PROVIDER_ABI,
+            )
+            thread_local.w3 = w3
+            thread_local.data_provider_contract = contract
+
+        return thread_local.w3, thread_local.data_provider_contract
+
+    def account_id_to_evm_address(account_id: str) -> str | None:
+        if not account_id or not account_id.startswith("0x"):
+            return None
+
+        h = account_id[2:].lower()
+
+        # Normal 20-byte EVM address
+        if len(h) == 40:
+            return Web3.to_checksum_address("0x" + h)
+
+        # Hydration embedded EVM address:
+        # 0x45544800 + 20-byte address + padding
+        if len(h) == 64 and h.startswith("45544800"):
+            return Web3.to_checksum_address("0x" + h[8:48])
+
+        # Not theoretically beautiful, but useful for this indexer format.
+        if len(h) == 64:
+            return Web3.to_checksum_address("0x" + h[:40])
+
+        return None
+
+    def fetch_account_ids(table_name: str) -> set[str]:
+        out = set()
+        offset = 0
+
+        while True:
+            query = f"""
+            query FetchAccounts($minBlock: Int!, $first: Int!, $offset: Int!) {{
+              {table_name}(
+                filter: {{
+                  paraBlockHeight: {{ greaterThanOrEqualTo: $minBlock }}
+                }}
+                first: $first
+                offset: $offset
+              ) {{
+                nodes {{
+                  accountId
+                }}
+              }}
+            }}
+            """
+
+            variables = {
+                "minBlock": min_block,
+                "first": page_size,
+                "offset": offset,
+            }
+
+            payload = query_indexer(URL_UNIFIED_PROD, query, variables)
+
+            if "errors" in payload:
+                raise RuntimeError(payload["errors"])
+
+            nodes = payload["data"][table_name]["nodes"]
+            if not nodes:
+                break
+
+            for node in nodes:
+                if node.get("accountId"):
+                    out.add(node["accountId"])
+
+            if len(nodes) < page_size:
+                break
+
+            offset += page_size
+
+        return out
+
+    # Main Web3 instance for reserve metadata
+    w3 = Web3(Web3.HTTPProvider(rpc_url, request_kwargs={"timeout": 60}))
+    if not w3.is_connected():
+        raise RuntimeError(f"Could not connect to {rpc_url}")
+
+    data_provider_contract = w3.eth.contract(
+        address=Web3.to_checksum_address(UI_POOL_DATA_PROVIDER_ADDRESS),
+        abi=UI_POOL_DATA_PROVIDER_ABI,
+    )
+
+    fields = [
+        entry["name"]
+        for entry in UI_POOL_DATA_PROVIDER_ABI[4]["outputs"][0]["components"]
+    ]
+
+    raw_data = data_provider_contract.functions.getReservesData(
+        Web3.to_checksum_address(POOL_ADDRESS_PROVIDER_ADDRESS)
+    ).call()
+
+    reserves_data = {
+        tkn[2]: {fields[i]: tkn[i] for i in range(len(fields))}
+        for tkn in raw_data[0]
+    }
+
+    for tkn, rd in reserves_data.items():
+        rd["baseLTVasCollateral"] /= 10000
+        rd["reserveLiquidationThreshold"] /= 10000
+        rd["reserveLiquidationBonus"] /= 10000
+        rd["reserveFactor"] /= 10000
+        rd["eModeLtv"] /= 10000
+        rd["eModeLiquidationThreshold"] /= 10000
+        rd["eModeLiquidationBonus"] /= 10000
+        rd["liquidityIndex"] /= 1e27
+        rd["variableBorrowIndex"] /= 1e27
+        rd["priceInMarketReferenceCurrency"] /= 1e8
+
+    asset_map = {
+        reserves_data[tkn]["underlyingAsset"].lower(): tkn
+        for tkn in reserves_data
+    }
+
+    raw_account_ids = fetch_account_ids("mmBorrows") | fetch_account_ids("mmRepays")
+
+    evm_addresses = {
+        addr
+        for raw in raw_account_ids
+        if (addr := account_id_to_evm_address(raw)) is not None
+    }
+
+    def effective_liquidation_threshold(symbol: str, user_emode: int) -> float:
+        rd = reserves_data[symbol]
+        if (
+            user_emode
+            and rd.get("eModeCategoryId") == user_emode
+            and rd.get("eModeLiquidationThreshold", 0) > 0
+        ):
+            return rd["eModeLiquidationThreshold"]
+        return rd["reserveLiquidationThreshold"]
+
+    def load_position(address: str):
+        _, contract = get_w3_and_contract()
+
+        user_config = contract.functions.getUserReservesData(
+            Web3.to_checksum_address(POOL_ADDRESS_PROVIDER_ADDRESS),
+            address,
+        ).call()
+
+        user_emode = user_config[1]
+        debt: dict[str, float] = {}
+        collateral: dict[str, float] = {}
+
+        total_debt_value = 0
+        total_collateral_value = 0
+        weighted_lt_value = 0
+
+        for tkn in user_config[0]:
+            underlying = tkn[0].lower()
+            if underlying not in asset_map:
+                continue
+
+            symbol = asset_map[underlying]
+            rd = reserves_data[symbol]
+            scale = 10 ** rd["decimals"]
+            price = rd["priceInMarketReferenceCurrency"]
+
+            balance = tkn[1] * rd["liquidityIndex"] / scale
+            variable_debt = tkn[4] * rd["variableBorrowIndex"] / scale
+            stable_debt = tkn[5] / scale if len(tkn) > 5 else 0
+            total_asset_debt = variable_debt + stable_debt
+
+            if total_asset_debt > 0:
+                debt[symbol] = total_asset_debt
+                total_debt_value += total_asset_debt * price
+
+            if balance > 0 and tkn[2]:
+                collateral[symbol] = balance
+                collateral_value = balance * price
+                total_collateral_value += collateral_value
+                weighted_lt_value += (
+                    collateral_value
+                    * effective_liquidation_threshold(symbol, user_emode)
+                )
+
+        if not debt:
+            return None
+
+        current_liquidation_threshold = (
+            weighted_lt_value / total_collateral_value
+            if total_collateral_value > 0
+            else 0
+        )
+
+        health_factor = (
+            weighted_lt_value / total_debt_value
+            if total_debt_value > 0
+            else float("inf")
+        )
+
+        return CDP(
+            debt=debt,
+            collateral=collateral,
+            liquidation_threshold=current_liquidation_threshold,
+            health_factor=health_factor,
+            e_mode=(
+                emode_labels[user_emode]
+                if user_emode < len(emode_labels)
+                else user_emode
+            ),
+        )
+
+    cdps = []
+    failures = []
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(load_position, address): address
+            for address in evm_addresses
+        }
+
+        for future in as_completed(futures):
+            address = futures[future]
+            try:
+                cdp = future.result()
+                if cdp is not None:
+                    cdps.append(cdp)
+            except Exception as e:
+                failures.append((address, e))
+                if not allow_partial:
+                    raise RuntimeError(f"Failed loading position for {address}: {e}") from e
+
+    if failures:
+        print(f"WARNING: {len(failures)} accounts failed to load")
+
+    mm = MoneyMarket(
+        assets=[
+            MoneyMarketAsset(
+                name=tkn,
+                price=reserves_data[tkn]["priceInMarketReferenceCurrency"],
+                liquidity=reserves_data[tkn]["availableLiquidity"],
+                liquidation_bonus=reserves_data[tkn]["reserveLiquidationBonus"] - 1,
+                liquidation_threshold=reserves_data[tkn]["reserveLiquidationThreshold"],
+                ltv=reserves_data[tkn]["baseLTVasCollateral"],
+                emode_liquidation_bonus=reserves_data[tkn]["eModeLiquidationBonus"] - 1,
+                emode_liquidation_threshold=reserves_data[tkn]["eModeLiquidationThreshold"],
+                emode_ltv=reserves_data[tkn]["eModeLtv"],
+                emode_label=reserves_data[tkn]["eModeLabel"],
+            )
+            for tkn in reserves_data
+        ],
+        cdps=cdps,
+    )
+
+    print(f"raw indexer account ids: {len(raw_account_ids)}")
+    print(f"converted EVM addresses: {len(evm_addresses)}")
+    print(f"loaded CDPs with debt: {len(cdps)}")
+
+    return mm
