@@ -1,5 +1,5 @@
 import base64
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 import dateutil.parser
 import json
 import os
@@ -7,7 +7,6 @@ import time
 from csv import reader
 from zipfile import ZipFile
 from pathlib import Path
-import pandas as pd
 
 import requests
 from dotenv import load_dotenv
@@ -18,7 +17,6 @@ from hydradxapi.pallets.omnipool import AssetState
 
 from .amm.centralized_market import OrderBook, CentralizedMarket
 from .amm.global_state import GlobalState, value_assets
-from .amm.money_market import MoneyMarket, MoneyMarketAsset, CDP
 from .amm.omnipool_amm import OmnipoolState
 from .amm.stableswap_amm import StableSwapPoolState
 from .amm.omnipool_router import OmnipoolRouter
@@ -84,7 +82,7 @@ def postprocessing(events: list, optional_params: list[str] = ()) -> list:
                 )
             if 'withdraw_val' in optional_params:
                 # what are this agent's holdings worth if sold?
-                agent.withdraw_val = state.cash_out(agent)
+                agent.withdraw_val = state.cash_out(agent.unique_id)
             if 'holdings_val' in optional_params:
                 agent.holdings_val = sum([quantity * state.price(asset) for asset, quantity in agent.holdings.items()])
             if 'impermanent_loss' in optional_params:
@@ -105,9 +103,9 @@ def postprocessing(events: list, optional_params: list[str] = ()) -> list:
 
 
 def import_binance_prices(
-        assets: list[str] or str, start_date: str, days: int=1, interval: int = 12,
+        assets: list[str] | str, start_date: str, days: int=1, interval: int = 12,
         stablecoin: str = 'USDT', return_as_dict: bool = False
-) -> dict[str: list[float]]:
+) -> dict[str, list[float]]:
     start_date = dateutil.parser.parse(start_date)
     dates = [datetime.strftime(start_date + timedelta(days=i), "%Y-%m-%d") for i in range(days)]
     if isinstance(assets, str): assets = [assets]
@@ -158,7 +156,7 @@ def import_binance_prices(
 
 def import_monthly_binance_prices(
         assets: list[str], start_month: str, months: int, interval: int = 12, return_as_dict: bool = False
-) -> dict[str: list[float]]:
+) -> dict[str, list[float]]:
     start_mth, start_year = start_month.split(' ')
 
     start_date = datetime.strptime(start_mth + ' 15 ' + start_year, "%b %d %Y")
@@ -464,7 +462,7 @@ def get_current_omnipool_router(rpc='wss://rpc.hydradx.cloud') -> OmnipoolRouter
     return router
 
 
-def save_state(omnipool_router: OmnipoolRouter, path: str or Path = './archive', filename: str = ''):
+def save_state(omnipool_router: OmnipoolRouter, path: str | Path = './archive', filename: str = ''):
     filepath = Path(path)
 
     if not filename:
@@ -500,7 +498,8 @@ def save_state(omnipool_router: OmnipoolRouter, path: str or Path = './archive',
         )
 
 
-def load_state(path: str or Path = './cached data', filename: str = '') -> OmnipoolRouter:
+def load_state(path: str | Path = './cached data', filename: str = '') -> OmnipoolRouter:
+    print (f"loading from path: {path}, filename: {filename}")
     filepath = Path(path)
     if filepath.is_file():
         filename = filepath.name
@@ -876,7 +875,7 @@ def download_history_files():
         os.rmdir(source_folder)
 
 
-def get_historical_omnipool_balance(tkn, date=None, end_date=None) -> float or dict[str: float]:
+def get_historical_omnipool_balance(tkn, date=None, end_date=None) -> float | dict[str, float]:
     """
     get the balance of a particular token on a particular date or range of dates
     (hopefully) without having to load the entire history or download anything
@@ -950,374 +949,3 @@ def get_historical_omnipool_balance(tkn, date=None, end_date=None) -> float or d
                     tkn_data += [line for line in json.load(f) if line[2] == tkn]
         print(f"Retrieved balance of {tkn} from {date.strftime('%Y-%m-%d')} - {end_date.strftime('%Y-%m-%d')}.")
         return {data[1]: data[3] for data in tkn_data[left:end]}
-
-
-def get_current_money_market():
-    from substrateinterface import SubstrateInterface
-    from .abi.pool_address_provider import POOL_ADDRESS_PROVIDER_ABI
-    from .abi.ui_pool_data_provider import UI_POOL_DATA_PROVIDER_ABI, UI_POOL_DATA_PROVIDER_ADDRESS
-
-    # --- Configuration ---
-    RPC_URL = "wss://rpc.hydradx.cloud"
-    POOL_ADDRESS_PROVIDER_ADDRESS = "0xf3Ba4D1b50f78301BDD7EAEa9B67822A15FCA691"
-    BORROWERS_API_ENDPOINT = "https://omniwatch.play.hydration.cloud/api/borrowers/by-health"
-    emode_labels = ['None', 'Stablecoins', 'DOT', 'ETH']
-    class CustomPoaMiddleware:
-        def __init__(self, w3):
-            self.w3 = w3
-
-        def wrap_make_request(self, make_request):
-            def middleware(method, params):
-                response = make_request(method, params)
-                result = response.get('result')
-                if result and isinstance(result, dict) and 'extraData' in result:
-                    # Just ignore extraData validation issues
-                    pass
-                return response
-
-            return middleware
-
-    def substrate_to_checksum(substrate_address):
-        """Converts a Substrate address to an Ethereum checksum address, or returns input if already checksummed"""
-        if substrate_address[:2] == '0x':
-            try:
-                return Web3.to_checksum_address(substrate_address)  # handles hex and checksum
-            except:
-                return None  # Handles invalid hex.
-        try:
-            # Use substrateinterface to directly convert to an Ethereum address
-            substrate = SubstrateInterface(url="wss://rpc.hydradx.cloud")
-            # Use decode_ss58 to get the public key in hex format
-            public_key_hex = substrate.ss58_decode(substrate_address)
-
-            # Create Ethereum address from the public key
-            address = '0x' + public_key_hex[2:]  # Correctly skip the first byte (0x2a or similar)
-
-            return Web3.to_checksum_address(address)
-
-        except Exception as e:
-            print(f"Error converting address {substrate_address}: {e}")
-            return None
-
-    from web3 import Web3, LegacyWebSocketProvider
-
-    provider = LegacyWebSocketProvider(RPC_URL)
-    w3 = Web3(provider)
-    w3.middleware_onion.add(CustomPoaMiddleware)
-    if not w3.is_connected():
-        raise Exception("Failed to connect to RPC endpoint.")
-
-    address_provider_contract = w3.eth.contract(address=Web3.to_checksum_address(POOL_ADDRESS_PROVIDER_ADDRESS),
-                                                abi=POOL_ADDRESS_PROVIDER_ABI)
-    pool_address = address_provider_contract.functions.getPool().call()
-    pool_address = substrate_to_checksum(pool_address)  # Convert the pool address
-    print(f"Pool Address: {pool_address}")
-    data_provider_contract = w3.eth.contract(address=UI_POOL_DATA_PROVIDER_ADDRESS, abi=UI_POOL_DATA_PROVIDER_ABI)
-
-    fields = [entry['name'] for entry in UI_POOL_DATA_PROVIDER_ABI[4]['outputs'][0]['components']]
-
-    try:
-        raw_data = data_provider_contract.functions.getReservesData(
-            Web3.to_checksum_address(POOL_ADDRESS_PROVIDER_ADDRESS),
-            # reserves_list
-        ).call()
-        reserves_data = {
-            tkn[2]: {
-                fields[i]: tkn[i]
-                for i in range(len(fields))
-            }
-            for tkn in raw_data[0]
-        }
-        # correct decimals for python
-        for tkn in reserves_data:
-            reserves_data[tkn]['baseLTVasCollateral'] /= 10000
-            reserves_data[tkn]['reserveLiquidationThreshold'] /= 10000
-            reserves_data[tkn]['reserveLiquidationBonus'] /= 10000
-            reserves_data[tkn]['reserveFactor'] /= 10000
-            reserves_data[tkn]['eModeLtv'] /= 10000
-            reserves_data[tkn]['eModeLiquidationThreshold'] /= 10000
-            reserves_data[tkn]['eModeLiquidationBonus'] /= 10000
-            reserves_data[tkn]['liquidityIndex'] /= 1e27
-            reserves_data[tkn]['variableBorrowIndex'] /= 1e27
-            reserves_data[tkn]['priceInMarketReferenceCurrency'] /= 1e8
-
-    except Exception as e:
-        print(f"Error getting reserve list: {e}")
-        reserves_data = {}
-        return None
-
-    borrowers = []
-
-    try:
-        response = requests.get(BORROWERS_API_ENDPOINT)
-        response.raise_for_status()  # Raise HTTPError for bad responses (4xx or 5xx)
-        borrowers_data = response.json()["borrowers"]
-    except requests.exceptions.RequestException as e:
-        # raise ConnectionError(f"Error fetching borrowers from API: {e}")
-        borrowers_data = []
-
-    # remove duplicated entries
-    seen = set()
-    borrowers_data_no_dupes = []
-    for borrower in borrowers_data:
-        k = borrower[0].lower()
-        if k in seen:
-            print("WARNING: Duplicate borrower detected:", k)
-        else:
-            seen.add(k)
-            borrowers_data_no_dupes.append(borrower)
-
-    for borrower_entry in borrowers_data_no_dupes:
-        borrower_info = borrower_entry[1]
-        borrower_address = borrower_entry[0]  # borrower_info["account"]
-        asset_map = {reserves_data[tkn]['underlyingAsset']: tkn for tkn in reserves_data}
-
-        # Convert to checksummed address *before* passing to Web3.py
-        checksummed_borrower_address = substrate_to_checksum(borrower_address)
-        user_config = data_provider_contract.functions.getUserReservesData(
-            Web3.to_checksum_address(POOL_ADDRESS_PROVIDER_ADDRESS),
-            checksummed_borrower_address
-        ).call()
-        borrowers.append({
-            "borrower": checksummed_borrower_address,  # Store the checksummed address
-            "config": {
-                'assets': {
-                    asset_map[tkn[0]]: {
-                        # "underlyingAsset": tkn[0],
-                        "balance": (
-                            tkn[1] * reserves_data[asset_map[tkn[0]]]['liquidityIndex']
-                            / 10 ** reserves_data[asset_map[tkn[0]]]['decimals']
-                        ),
-                        "usageAsCollateralEnabledOnUser": tkn[2],
-                        # "stableBorrowRate": tkn[3],
-                        "debt": (
-                            tkn[4] * reserves_data[asset_map[tkn[0]]]['variableBorrowIndex']
-                            / 10 ** reserves_data[asset_map[tkn[0]]]['decimals']
-                        ),
-                        # "principalStableDebt": tkn[5] / 10 ** reserves_data[asset_map[tkn[0]]]['decimals'],
-                        # "stableBorrowLastUpdateTimestamp": tkn[6],
-                    }
-                    for tkn in user_config[0]
-                },
-                'e-mode': user_config[1]
-            },
-            "totalCollateralBase": borrower_info["totalCollateralBase"],
-            "totalDebtBase": borrower_info["totalDebtBase"],
-            "healthFactor": borrower_info["healthFactor"],
-            "availableBorrowsBase": borrower_info["availableBorrowsBase"],
-            "currentLiquidationThreshold": borrower_info["currentLiquidationThreshold"],
-            "ltv": borrower_info["ltv"],
-            "updated": borrower_info["updated"],
-            "account": borrower_info["account"],
-            # "pool": borrower_info["pool"]
-        })
-
-
-    mm = MoneyMarket(
-        assets=[MoneyMarketAsset(
-            name=tkn,
-            price=reserves_data[tkn]['priceInMarketReferenceCurrency'],
-            liquidity=reserves_data[tkn]['availableLiquidity'],
-            liquidation_bonus=reserves_data[tkn]['reserveLiquidationBonus'] - 1,
-            liquidation_threshold=reserves_data[tkn]['reserveLiquidationThreshold'],
-            ltv=reserves_data[tkn]['baseLTVasCollateral'],
-            emode_liquidation_bonus=reserves_data[tkn]['eModeLiquidationBonus'] - 1,
-            emode_liquidation_threshold=reserves_data[tkn]['eModeLiquidationThreshold'],
-            emode_ltv=reserves_data[tkn]['eModeLtv'],
-            emode_label=reserves_data[tkn]['eModeLabel'],
-        ) for tkn in reserves_data],
-        cdps=[CDP(
-            debt={
-                tkn: position['config']['assets'][tkn]['debt']
-                for tkn in position['config']['assets']
-                if position['config']['assets'][tkn]['debt'] > 0
-            },
-            collateral={
-                tkn: position['config']['assets'][tkn]['balance']
-                for tkn in position['config']['assets']
-                if position['config']['assets'][tkn]['usageAsCollateralEnabledOnUser']
-            },
-            liquidation_threshold=position['currentLiquidationThreshold'],
-            health_factor=position['healthFactor'],
-            e_mode=emode_labels[position['config']['e-mode']]
-        ) for position in borrowers]
-    )
-    return mm
-
-
-def get_omnipool_price_history(asset_name: str):
-    asset_dict = {
-        'HDX': 0,
-        'USDT': 10
-    }
-    if asset_name not in asset_dict:
-        raise ValueError("Asset not found")
-    else:
-        asset_id = asset_dict[asset_name]
-
-    while not os.path.exists('./model'):
-        os.chdir('..')
-    os.chdir('model')
-
-    endpoint = "https://galacticcouncil.squids.live/hydration-storage-dictionary:omnipool/api/graphql"
-    headers = {"Content-Type": "application/json"}
-
-    query = """
-    query GetOmnipoolAssetData($first: Int!, $blockID: Int!, $assetId: Int!) {
-      omnipoolAssetData(
-        first: $first,
-        filter: {
-          assetId: { equalTo: $assetId },
-          paraChainBlockHeight: { greaterThan: $blockID }
-        },
-        orderBy: PARA_CHAIN_BLOCK_HEIGHT_ASC
-      ) {
-        edges {
-          node {
-            paraChainBlockHeight
-            balances
-            assetState
-          }
-        }
-        pageInfo {
-          hasNextPage
-          endCursor
-        }
-      }
-    }
-    """
-
-    # Check for existing files
-    files = sorted([f for f in os.listdir("./data/prices") if f.lower().startswith(f"{asset_name.lower()} asset state ")])
-
-    start_block_height = 0  # Default to start from the beginning
-
-    all_data = {}
-    if files:
-        print("Resuming from saved data...")
-        for file in files:
-            with open(f"./data/prices/{file}", "r") as f:
-                saved_data = json.load(f)
-            all_data.update(saved_data)
-
-        start_block_height = int(max(all_data.keys()))
-        print(f"Found {len(files)} files")
-        print(f"Resuming from block height: {start_block_height}")
-
-    variables = {"first": 10000, "blockID": start_block_height, "assetId": asset_id}
-
-    n = len(files) + 1 if files else 1
-
-    while True:
-        payload = {"query": query, "variables": variables}
-        response = requests.post(endpoint, headers=headers, json=payload)
-        response_json = response.json()
-
-        if "errors" in response_json:
-            print(f"GraphQL errors: {response_json['errors']}")
-            break
-
-        data = response_json["data"]["omnipoolAssetData"]
-
-        balances = {
-            d['node']['paraChainBlockHeight']: {
-                'liquidity': d['node']['balances']['free'],
-                'LRNA': d['node']['assetState']['hubReserve']
-            } for d in data['edges']
-        }
-
-        print(f"Page {n} fetched: {len(data['edges'])} records")
-        with open(f"./data/prices/{asset_name} asset state {n:03}.json", "w") as f:
-            f.write(json.dumps(balances))
-
-        all_data.update(balances)
-
-        if data["pageInfo"]["hasNextPage"]:
-            last_block_in_page = max(balances.keys())
-            variables["blockID"] = int(last_block_in_page)
-            n += 1
-        else:
-            break
-
-    print(f"Total records fetched: {len(all_data)}")
-
-
-def save_money_market(mm: MoneyMarket, path: str = './archive', filename: str = None):
-    if filename is None:
-        filename = f"money_market_savefile_{time.time()}.json"
-    elif not filename.endswith('.json'):
-        filename += '.json'
-
-    json_state = {
-        'unique_id': mm.unique_id,
-        'close_factor': mm.partial_liquidation_pct,
-        'full_liquidation_threshold': mm.full_liquidation_threshold,
-        'time_step': mm.time_step,
-        'assets': [
-            {
-                'name': asset.name,
-                'emode_label': asset.emode_label,
-                'liquidity': asset.liquidity,
-                'price': asset.price,
-                'supply_cap': asset.supply_cap,
-                'liquidation_threshold': asset.liquidation_threshold,
-                'liquidation_bonus': asset.liquidation_bonus,
-                'ltv': asset.ltv,
-                'emode_liquidation_threshold': asset.emode_liquidation_threshold,
-                'emode_liquidation_bonus': asset.emode_liquidation_bonus,
-                'emode_ltv': asset.emode_ltv
-            } for asset in mm.assets.values()
-        ],
-        'cdps': [
-            {
-                'debt': {tkn: cdp.debt[tkn] for tkn in cdp.debt},
-                'collateral': {tkn: cdp.collateral[tkn] for tkn in cdp.collateral}
-            } for cdp in mm.cdps
-        ]
-    }
-    with open(os.path.join(path, filename), 'w') as savefile:
-        json.dump(json_state, savefile)
-
-
-def load_money_market(path: str = './archive', filename: str = None):
-    if filename is None:
-        file_ls = os.listdir(path)
-        for name in file_ls:
-            # return with the first likely-looking file
-            if name.startswith('money_market_savefile') and name.endswith('.json'):
-                filename = name
-    elif not(filename.endswith('.json')):
-        filename += '.json'
-    if filename is None or not os.path.exists(os.path.join(path, filename)):
-        raise FileNotFoundError(f'Money market file not found in {path}.')
-    with open(os.path.join(path, filename), 'r') as loadfile:
-        json_data = json.load(loadfile)
-    mm = MoneyMarket(
-        unique_id=json_data['unique_id'],
-        close_factor=json_data['close_factor'],
-        full_liquidation_threshold=json_data['full_liquidation_threshold'],
-        assets=[
-            MoneyMarketAsset(
-                name=asset['name'],
-                liquidity=asset['liquidity'],
-                supply_cap=asset['supply_cap'],
-                price=asset['price'],
-                emode_label=asset['emode_label'],
-                liquidation_threshold=asset['liquidation_threshold'],
-                liquidation_bonus=asset['liquidation_bonus'],
-                ltv=asset['ltv'],
-                emode_liquidation_threshold=asset['emode_liquidation_threshold'],
-                emode_liquidation_bonus=asset['emode_liquidation_bonus'],
-                emode_ltv=asset['emode_ltv']
-            ) for asset in json_data['assets']
-        ],
-        cdps=[
-            CDP(
-                debt={tkn: quantity for tkn, quantity in cdp['debt'].items()},
-                collateral={tkn: quantity for tkn, quantity in cdp['collateral'].items()}
-            ) for cdp in json_data['cdps']
-        ]
-    )
-    mm.time_step = json_data['time_step']
-    print(f"loaded {os.path.join(path, filename)}")
-    return mm
