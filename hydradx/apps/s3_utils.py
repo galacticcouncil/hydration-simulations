@@ -112,6 +112,8 @@ def get_s3_config() -> dict | None:
         "aws_secret_access_key": _get("aws_secret_access_key", "AWS_SECRET_ACCESS_KEY"),
         "region_name": _get("region_name", "AWS_DEFAULT_REGION"),
         "endpoint_url": _get("endpoint_url", "S3_ENDPOINT_URL"),
+        "signature_version": _get("signature_version", "S3_SIGNATURE_VERSION"),
+        "addressing_style": _get("addressing_style", "S3_ADDRESSING_STYLE"),
     }
 
 
@@ -125,11 +127,22 @@ def get_s3_client():
 
     try:
         import boto3
+        from botocore.config import Config
 
         client_kwargs = {}
         for key in ("aws_access_key_id", "aws_secret_access_key", "region_name", "endpoint_url"):
             if cfg.get(key):
                 client_kwargs[key] = cfg[key]
+
+        config_kwargs = {}
+        if cfg.get("addressing_style"):
+            config_kwargs["s3"] = {"addressing_style": cfg["addressing_style"]}
+
+        if cfg.get("signature_version") or config_kwargs:
+            client_kwargs["config"] = Config(
+                signature_version=cfg.get("signature_version") or "s3v4",
+                **config_kwargs,
+            )
 
         client = boto3.client("s3", **client_kwargs)
         return client, cfg
@@ -169,9 +182,11 @@ def download_file_from_s3(key: str, dest_path: Path, bucket: str | None = None) 
         print("[cloud] Downloaded object from S3.")
         return True
     except client.exceptions.NoSuchKey:
+        print(f"[cloud] S3 object not found: {key}")
         return False
-    except Exception:
-        print("[cloud] S3 download failed.")
+    except Exception as exc:
+        st.warning(f"S3 download failed: {exc}")
+        print(f"[cloud] S3 download failed: {exc}")
         return False
 
 
@@ -208,8 +223,9 @@ def list_s3_keys(prefix: str, bucket: str | None = None) -> list[str]:
         for page in paginator.paginate(Bucket=bucket_name, Prefix=prefix):
             for item in page.get("Contents", []):
                 keys.append(item["Key"])
-    except Exception:
-        print("[cloud] S3 list failed.")
+    except Exception as exc:
+        st.warning(f"S3 list failed: {exc}")
+        print(f"[cloud] S3 list failed: {exc}")
     return keys
 
 

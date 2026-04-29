@@ -7,6 +7,7 @@ import sys, os, math
 import streamlit as st
 import time, datetime
 from pathlib import Path
+import re
 
 from streamlit import form_submit_button
 
@@ -25,6 +26,8 @@ from hydradx.model.indexer_utils import get_current_omnipool_router, get_current
 from hydradx.apps.display_utils import get_distribution, one_line_markdown
 from hydradx.model.amm.fixed_price import FixedPriceExchange
 from hydradx.model.indexer_utils import get_current_money_market
+from hydradx.apps.s3_utils import list_s3_keys, download_file_from_s3
+from hydradx.apps.s3_utils import upload_file_to_s3
 
 st.markdown("""
     <style>
@@ -50,18 +53,97 @@ st.markdown("""
 st.set_page_config(layout="wide")
 print("App start")
 
+
+def _parse_router_block_from_key(key: str) -> int | None:
+    filename = Path(key).name
+    match = re.search(r"omnipool_router_savefile_(\d+)(?:\.json)?$", filename)
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except ValueError:
+        return None
+
+
+def _select_closest_router_key(keys: list[str], block_number: int) -> str | None:
+    candidates = []
+    for key in keys:
+        parsed = _parse_router_block_from_key(key)
+        if parsed is not None:
+            candidates.append((parsed, key))
+    if not candidates:
+        return None
+    # Prefer the closest block, then the higher block as a tiebreaker.
+    return min(candidates, key=lambda item: (abs(item[0] - block_number), -item[0]))[1]
+
+
 @st.cache_data(ttl=3600, show_spinner="Loading Omnipool data (cached for 1 hour)...")
 def load_omnipool_router() -> tuple[OmnipoolRouter, str]:
     cache_time = datetime.datetime.now().strftime("%H:%M:%S")
     load_path = Path(__file__).parent / "archive"
-    if load_path.exists():
-        load_router = load_state(path=load_path)
-    else:
-        block_number = get_current_block_height() - 1000
+    load_path.mkdir(parents=True, exist_ok=True)
+    block_number = get_current_block_height() - 1000
+
+    load_router = None
+    selected_block = block_number
+    try:
+        print("[router] Listing S3 keys (omnipool-storage/routers)")
+        keys = list_s3_keys(prefix="routers/omnipool_router_savefile_", bucket="omnipool-storage")
+        if not keys:
+            print("[router] No S3 keys returned from list (omnipool-storage/routers)")
+        key = _select_closest_router_key(keys, block_number) if keys else None
+        if key:
+            print(f"[router] Selected S3 key: {key}")
+            dest = load_path / Path(key).name
+            print(f"[router] Downloading S3 key: {key}")
+            if download_file_from_s3(key, dest, bucket="omnipool-storage"):
+                print(f"[router] Downloaded S3 key to: {dest}")
+                load_router = load_state(path=load_path, filename=dest.name)
+                parsed_block = _parse_router_block_from_key(key)
+                if parsed_block is not None:
+                    selected_block = parsed_block
+            else:
+                print(f"[router] Failed to download S3 key: {key}")
+        else:
+            # Some buckets disallow ListObjects; try direct get by block.
+            for candidate in (
+                f"routers/omnipool_router_savefile_{block_number}",
+                f"routers/omnipool_router_savefile_{block_number}.json",
+                "routers/omnipool_router_savefile_0",
+                "routers/omnipool_router_savefile_0.json",
+            ):
+                print(f"[router] Trying S3 key: {candidate}")
+                dest = load_path / Path(candidate).name
+                if download_file_from_s3(candidate, dest, bucket="omnipool-storage"):
+                    print(f"[router] Downloaded S3 key to: {dest}")
+                    load_router = load_state(path=load_path, filename=dest.name)
+                    selected_block = 0 if candidate.endswith("_0") or candidate.endswith("_0.json") else block_number
+                    break
+                print(f"[router] Failed to download S3 key: {candidate}")
+    except Exception as exc:
+        print(f"[router] S3 router load failed: {exc}")
+        load_router = None
+
+    if load_router is None:
+        try:
+            print(f"[router] Falling back to local cache in: {load_path}")
+            load_router = load_state(path=load_path)
+        except Exception:
+            load_router = None
+
+    if load_router is None:
         # Add timestamp to verify caching
         print(f"Cache miss! Loading omnipool at {cache_time}")
         load_router = get_current_omnipool_router(block_number)
-        save_state(load_router, filename=f"omnipool_router_savefile.json")
+        selected_block = block_number
+
+    save_filename = f"omnipool_router_savefile_{selected_block}"
+    try:
+        save_state(load_router, path=load_path, filename=save_filename)
+        upload_file_to_s3(load_path / save_filename, f"routers/{save_filename}", bucket="omnipool-storage")
+        print(f"[router] Uploaded S3 key: routers/{save_filename}")
+    except Exception:
+        pass
 
     load_omnipool = load_router.exchanges['omnipool']
 
@@ -84,17 +166,61 @@ def load_omnipool_router() -> tuple[OmnipoolRouter, str]:
     return OmnipoolRouter(exchanges=[load_omnipool, *stableswap_pools], unique_id='router'), cache_time
 
 
+def _parse_mm_block_from_key(key: str) -> int | None:
+    filename = Path(key).name
+    match = re.search(r"money_market_savefile_(\d+)\.json$", filename)
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except ValueError:
+        return None
+
+
+def _select_closest_mm_key(keys: list[str], block_number: int) -> str | None:
+    candidates = []
+    for key in keys:
+        parsed = _parse_mm_block_from_key(key)
+        if parsed is not None:
+            candidates.append((parsed, key))
+    if not candidates:
+        return None
+    # Prefer the closest block, then the higher block as a tiebreaker.
+    return min(candidates, key=lambda item: (abs(item[0] - block_number), -item[0]))[1]
+
+
 def load_money_market(block_number: int) -> MoneyMarket:
     print("Loading money market data...")
+    load_path = Path(__file__).parent / "archive"
+    load_path.mkdir(parents=True, exist_ok=True)
+
+    status_box = st.empty()
+    status_box.info("Checking S3 for money market savefiles...")
+
+    load_mm = None
     try:
-        # if '/' in __file__:
-        #     os.chdir(__file__[:__file__.rfind('/')])
-        print(f"attempting to load money market from: {os.getcwd()}")
-        load_mm = load_money_market_from_file()
-    except FileNotFoundError:
-        print('No local money market save file found - downloading from chain...')
-        load_mm = get_current_money_market()
-        load_mm.time_step = block_number
+        keys = list_s3_keys(prefix="", bucket="money-market-storage")
+        key = _select_closest_mm_key(keys, block_number) if keys else None
+        if key:
+            print(f"Downloading money market savefile from S3: {key}")
+            dest = load_path / Path(key).name
+            if download_file_from_s3(key, dest, bucket="money-market-storage"):
+                status_box.success(f"Loaded money market savefile from S3: {dest.name}")
+                print(f"Loaded money market savefile from S3 into: {dest}")
+                load_mm = load_money_market_from_file(path=load_path, filename=dest.name)
+    except Exception:
+        load_mm = None
+
+    if load_mm is None:
+        try:
+            # if '/' in __file__:
+            #     os.chdir(__file__[:__file__.rfind('/')])
+            print(f"attempting to load money market from: {os.getcwd()}")
+            load_mm = load_money_market_from_file(path=load_path)
+        except FileNotFoundError:
+            print('No local money market save file found - downloading from chain...')
+            load_mm = get_current_money_market()
+            load_mm.time_step = block_number
 
     if load_mm is None:
         print('Money market could not be loaded - check internet connection.')
@@ -109,6 +235,7 @@ def load_money_market(block_number: int) -> MoneyMarket:
         pass
 
     print("Finished downloading money_market data.")
+    status_box.empty()
     return load_mm
 
 
@@ -625,6 +752,7 @@ with st.sidebar:
     sidebar_builder()
 
 
+
 @st.fragment
 def plot_health_factor_distribution(mm):
     with st.expander("CDP Health Factor Distribution"):
@@ -960,8 +1088,7 @@ def run_app():
                             debt[i] * (
                                 event.pools['money_market'].assets[tkn].price
                                 if tkn in st.session_state["money_market"].asset_list else 1
-                            )
-                            for i, event in enumerate(events)
+                            ) for i, event in enumerate(events)
                         ], label=f"{tkn}" if st.session_state.toxic_debt_breakdown else None
                     )
                     ax.set_title("Toxic debt in USD")
