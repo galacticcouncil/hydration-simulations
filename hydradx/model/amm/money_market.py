@@ -39,7 +39,8 @@ class CDP:
             self.debt,
             self.collateral,
             liquidation_threshold=self.liquidation_threshold if self.fix_liquidation_threshold else None,
-            health_factor=self.health_factor
+            health_factor=self.health_factor,
+            e_mode=self.e_mode
         )
 
     def validate(self) -> bool:
