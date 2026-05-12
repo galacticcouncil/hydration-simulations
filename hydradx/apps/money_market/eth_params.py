@@ -350,7 +350,7 @@ def rebuild_money_market():
                 new_cdp.collateral[tkn] *= old_prices[tkn] / new_mm.assets[tkn].price
             if tkn in new_cdp.debt:
                 new_cdp.debt[tkn] *= old_prices[tkn] / new_mm.assets[tkn].price
-        if st.session_state.include_original_cdps and new_mm.get_health_factor(cdp) >= 1:
+        if st.session_state.include_original_cdps and new_mm.get_health_factor(new_cdp) >= 1:
             new_mm.add_cdp(new_cdp)
 
     new_mm.add_cdps(distribute_cdps(
