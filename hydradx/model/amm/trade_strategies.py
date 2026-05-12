@@ -1103,7 +1103,7 @@ def liquidate_cdps(pool_id: str = None, iters: int = 16) -> TradeStrategy:
         for pool in list(pools):
             if hasattr(pool, 'exchanges'):
                 pools |= set(pool.exchanges.values())
-        mms = [pool for pool in state.pools.values() if isinstance(pool, MoneyMarket)]
+        mms = [pool for pool in pools if isinstance(pool, MoneyMarket)]
         for mm in mms:
             for cdp in mm.cdps:
                 potential_liquidations = True
