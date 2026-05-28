@@ -490,7 +490,7 @@ def test_omnipool_liquidate_cdp_not_profitable():
         pools={"omnipool": omnipool, "money_market": mm},
         agents={"agent": treasury_agent}
     )
-    new_state = initial_state.copy().evolve()
+    new_state = initial_state.copy().update()
     new_agent = new_state.agents["agent"]
     if sum(new_agent.holdings.values()) != 0:
         raise ValueError('Agent holdings should not change after failed liquidation')
@@ -564,7 +564,7 @@ def test_liquidate_against_omnipool_full_liquidation(ratio1: float, ratio2: floa
     state = GlobalState(agents={"liq_agent": liq_agent},
                         pools=[omnipool, mm])
 
-    state.evolve()
+    state.update()
 
     if cdp1.debt['USDT'] != 0:
         raise ValueError("CDP1 should be fully liquidated.")
@@ -615,7 +615,7 @@ def test_liquidate_against_omnipool_partial_liquidation():
     GlobalState(
         agents={"liq_agent": liq_agent},
         pools={"omnipool": omnipool, "money market": mm}
-    ).evolve()
+    ).update()
 
     if cdp1.debt["USDT"] != debt_amt1 * (1 - mm.partial_liquidation_pct):
         raise ValueError("CDP1 should be partially liquidated by partial_liquidation_pct")
@@ -664,7 +664,7 @@ def test_liquidate_against_omnipool_no_liquidation(ratio1: float):
         pools={"omnipool": omnipool, "money_market": mm}
     )
 
-    state.evolve()
+    state.update()
 
     if debt_amt1 != cdp1.debt['USDT']:
         raise ValueError("No liquidation should occur")
@@ -725,7 +725,7 @@ def test_liquidate_against_omnipool_fuzz(collateral_amt1: float, ratio1: float, 
     cdp1_archive = cdp1.copy()
     mm_archive = mm.copy()
 
-    state.evolve()
+    state.update()
     liq_agent.trade_strategy.execute(state, 'liq_agent')
 
     if cdp1.debt['USDT'] == 0:  # fully liquidated

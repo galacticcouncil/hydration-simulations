@@ -16,7 +16,7 @@ class GlobalState:
                  pools: dict[str, Exchange] | list[Exchange],
                  otcs: list[OTC] = None,
                  external_market: dict[str, float] = None,
-                 evolve_function: Callable = None,
+                 update_function: Callable = None,
                  save_data: dict = None,
                  archive_all: bool = True,
                  ):
@@ -49,7 +49,7 @@ class GlobalState:
         #     for asset in self.asset_list:
         #         if asset not in agent.holdings:
         #             agent.holdings[asset] = 0
-        self.evolve_function = evolve_function
+        self.update_function = update_function
         self.datastreams = save_data
         self.save_data = {
             tag: save_data[tag].assemble(self)
@@ -93,7 +93,7 @@ class GlobalState:
             pools={pool_id: self.pools[pool_id].copy() for pool_id in self.pools},
             otcs=[otc.copy() for otc in self.otcs],
             external_market=self.external_market.copy(),
-            evolve_function=copy.copy(self.evolve_function),
+            update_function=copy.copy(self.update_function),
             save_data=self.datastreams,
             archive_all=self.archive_all
         )
@@ -111,12 +111,12 @@ class GlobalState:
         else:
             return ArchiveState(self)
 
-    def evolve(self):
+    def update(self):
         self.time_step += 1
         for pool in self.pools.values():
             pool.update()
-        if self.evolve_function:
-            self.evolve_function(self)
+        if self.update_function:
+            self.update_function(self)
         # agent actions
         agent_ids = list(self.agents.keys())
         for agent_id in agent_ids:
@@ -280,7 +280,7 @@ class GlobalState:
                     f'{indent}{tkn}: ${price}' for tkn, price in self.external_market.items()
                 ])) +
                 f'{newline}{newline}'
-                f'evolution function: {self.evolve_function.__name__ if self.evolve_function else "None"}'
+                f'evolution function: {self.update_function.__name__ if self.update_function else "None"}'
                 f'{newline}'
         )
 

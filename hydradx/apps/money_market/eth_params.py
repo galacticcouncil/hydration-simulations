@@ -912,7 +912,7 @@ def run_app():
                 )
             )
         },
-        evolve_function=update_prices,
+        update_function=update_prices,
         external_market=start_price
     )
 

@@ -122,7 +122,7 @@ def global_state_config(
         pools=pools,
         agents=agents,
         external_market=market_prices,
-        evolve_function=evolve_function
+        update_function=evolve_function
     )
     return config
 

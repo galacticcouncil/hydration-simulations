@@ -126,7 +126,7 @@ def test_adot_minting_lp():
         pools=[omnipool],
         agents=[arbitrageur],
         external_market={tkn: initial_omnipool.usd_price(tkn) for tkn in initial_omnipool.liquidity}
-    ).evolve()
+    ).update()
     omnipool.remove_liquidity(
         agent = lp,
         tkn_remove = 'aDOT'
