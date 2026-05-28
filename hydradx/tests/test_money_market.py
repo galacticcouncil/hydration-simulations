@@ -960,7 +960,7 @@ def test_full_liquidation_not_profitable():
 
 
 def test_get_money_market():
-    from hydradx.model.processing import get_current_money_market
+    from hydradx.model.indexer_utils import get_current_money_market
     mm = get_current_money_market()
     if not isinstance(mm, MoneyMarket):
         raise ValueError("MoneyMarket should be returned")

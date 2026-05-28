@@ -1099,11 +1099,18 @@ def general_arbitrage(exchanges: list[Exchange], equivalency_map: dict = None, c
 def liquidate_cdps(pool_id: str = None, iters: int = 16) -> TradeStrategy:
     def strategy(state: GlobalState, agent_id: str) -> GlobalState:
         agent = state.agents[agent_id]
-        pools: set[Exchange] = {state.pools[pool_id]} if pool_id else set(state.pools.values())
-        for pool in list(pools):
+        liquidation_pools: set[Exchange] = {state.pools[pool_id]} if pool_id else set(state.pools.values())
+        for pool in list(liquidation_pools):
             if hasattr(pool, 'exchanges'):
-                pools |= set(pool.exchanges.values())
-        mms = [pool for pool in pools if isinstance(pool, MoneyMarket)]
+                liquidation_pools |= set(pool.exchanges.values())
+        mms = []
+        for pool in state.pools.values():
+            if isinstance(pool, MoneyMarket):
+                mms.append(pool)
+            elif hasattr(pool, 'exchanges'):
+                for sub_pool in pool.exchanges.values():
+                    if isinstance(sub_pool, MoneyMarket):
+                        mms.append(sub_pool)
         for mm in mms:
             for cdp in mm.cdps:
                 potential_liquidations = True
@@ -1124,7 +1131,7 @@ def liquidate_cdps(pool_id: str = None, iters: int = 16) -> TradeStrategy:
                             # not liquidatable
                             continue
 
-                        for pool in pools:
+                        for pool in liquidation_pools:
                             if collateral_tkn not in pool.asset_list or debt_tkn not in pool.asset_list:
                                 continue
                             if debt_tkn not in cdp.debt or collateral_tkn not in cdp.collateral \
