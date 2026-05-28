@@ -153,8 +153,10 @@ def back_and_forth(
     return TradeStrategy(strategy, name=f'back and forth (${percentage})')
 
 
-def invest_all(pool_id: str, assets: list or str = None, when: int = 0) -> TradeStrategy:
-
+def invest_all(pool_id: str, assets: list | str = None, when: int = None) -> TradeStrategy:
+    """
+    if when is not specified, the strategy will try to invest all assets at every time step. If when is specified, it will only try to invest at that time step.
+    """
     if assets and not isinstance(assets, list):
         assets = [assets]
 
@@ -164,21 +166,21 @@ def invest_all(pool_id: str, assets: list or str = None, when: int = 0) -> Trade
             self.done = False
 
         def execute(self, state: GlobalState, agent_id: str):
-            if state.time_step < self.when:
-                return state
+            if self.when is not None:
+                if state.time_step != self.when:
+                    return state
             agent: Agent = state.agents[agent_id]
             pool = state.pools[pool_id]
 
             for asset in assets or list(agent.holdings.keys()):
                 if agent.holdings[asset] == 0:
                     continue
-                if asset in state.pools[pool_id].asset_list:
+                if asset in state.pools[pool_id].liquidity:
                     pool.add_liquidity(
                         agent=agent,
                         quantity=agent.holdings[asset],
                         tkn_add=asset
                     )
-
             return state
 
     return TradeStrategy(Strategy(when).execute, name=f'invest all ({pool_id})')
@@ -190,7 +192,8 @@ def withdraw_all(when: int) -> TradeStrategy:
         if state.time_step == when:
             agent = state.agents[agent_id]
             new_state = state
-            for key in agent.holdings.keys():
+            holding_keys = list(agent.holdings.keys())
+            for key in holding_keys:
                 # shares.keys might just be the pool name, or it might be a tuple (pool, token)
                 if isinstance(key, tuple):
                     pool_id = key[0]
@@ -1099,11 +1102,18 @@ def general_arbitrage(exchanges: list[Exchange], equivalency_map: dict = None, c
 def liquidate_cdps(pool_id: str = None, iters: int = 16) -> TradeStrategy:
     def strategy(state: GlobalState, agent_id: str) -> GlobalState:
         agent = state.agents[agent_id]
-        pools: set[Exchange] = {state.pools[pool_id]} if pool_id else set(state.pools.values())
-        for pool in list(pools):
+        liquidation_pools: set[Exchange] = {state.pools[pool_id]} if pool_id else set(state.pools.values())
+        for pool in list(liquidation_pools):
             if hasattr(pool, 'exchanges'):
-                pools |= set(pool.exchanges.values())
-        mms = [pool for pool in state.pools.values() if isinstance(pool, MoneyMarket)]
+                liquidation_pools |= set(pool.exchanges.values())
+        mms = []
+        for pool in state.pools.values():
+            if isinstance(pool, MoneyMarket):
+                mms.append(pool)
+            elif hasattr(pool, 'exchanges'):
+                for sub_pool in pool.exchanges.values():
+                    if isinstance(sub_pool, MoneyMarket):
+                        mms.append(sub_pool)
         for mm in mms:
             for cdp in mm.cdps:
                 potential_liquidations = True
@@ -1124,7 +1134,7 @@ def liquidate_cdps(pool_id: str = None, iters: int = 16) -> TradeStrategy:
                             # not liquidatable
                             continue
 
-                        for pool in pools:
+                        for pool in liquidation_pools:
                             if collateral_tkn not in pool.asset_list or debt_tkn not in pool.asset_list:
                                 continue
                             if debt_tkn not in cdp.debt or collateral_tkn not in cdp.collateral \

@@ -8,14 +8,14 @@ from .exchange import Exchange
 class CDP:
     def __init__(
             self,
-            debt: dict[str: float],
-            collateral: dict[str: float],
+            debt: dict[str, float],
+            collateral: dict[str, float],
             liquidation_threshold: float = None,
             health_factor: float = None,
-            e_mode: str = None
+            e_mode: str = 'None'
     ):
-        self.debt: dict[str: float] = {tkn: debt[tkn] for tkn in debt}
-        self.collateral: dict[str: float] = {tkn: collateral[tkn] for tkn in collateral}
+        self.debt: dict[str, float] = {tkn: debt[tkn] for tkn in debt}
+        self.collateral: dict[str, float] = {tkn: collateral[tkn] for tkn in collateral}
         self.asset_list = list(debt.keys() | collateral.keys())
         self.liquidation_threshold = liquidation_threshold
         self.health_factor = health_factor
@@ -39,7 +39,8 @@ class CDP:
             self.debt,
             self.collateral,
             liquidation_threshold=self.liquidation_threshold if self.fix_liquidation_threshold else None,
-            health_factor=self.health_factor
+            health_factor=self.health_factor,
+            e_mode=self.e_mode
         )
 
     def validate(self) -> bool:
@@ -286,11 +287,12 @@ class MoneyMarket(Exchange):
         return sum([value * threshold[tkn] for tkn, value in collateral_values.items()]) / total_collateral
 
     def borrow(self, agent: Agent, borrow_asset: str, collateral_asset: str, borrow_amt: float,
-               collateral_amt: float) -> CDP or None:
+               collateral_amt: float) -> CDP | None:
         assert borrow_asset != collateral_asset
         assert borrow_asset in self.liquidity
         if not borrow_amt <= self.liquidity[borrow_asset] - self.borrowed[borrow_asset]:
-            return self.fail_transaction(f"Not enough liquidity to borrow {borrow_asset}")
+            self.fail_transaction(f"Not enough liquidity to borrow {borrow_asset}")
+            return None
         assert agent.validate_holdings(collateral_asset, collateral_amt)
         price = self.price(collateral_asset) / self.price(borrow_asset)
         if price * collateral_amt * self.get_ltv(collateral_asset, borrow_asset, self.assets[collateral_asset].emode_label) < borrow_amt:
@@ -397,7 +399,7 @@ class MoneyMarket(Exchange):
             cdp.liquidation_threshold = self.cdp_liquidation_threshold(cdp)
         return self
 
-    def value_assets(self, assets: dict[str: float], numeraire: str = None) -> float:
+    def value_assets(self, assets: dict[str, float], numeraire: str = None) -> float:
         return sum([assets[tkn] * self.price(tkn, numeraire) for tkn in assets])
 
     def validate(self):

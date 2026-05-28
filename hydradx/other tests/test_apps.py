@@ -346,3 +346,16 @@ def test_hdx_h2o_undo():
     from hydradx.apps.omnipool.hdx_h2o_undo import find_hollar_trades, simulate_lp_experience
     find_hollar_trades()
     # simulate_lp_experience()
+
+def test_husde_depeg():
+    from hydradx.apps.money_market.husde_depeg import load_market_data, simulate_husde_depeg
+    money_market, omnipool_router = load_market_data()
+    simulate_husde_depeg(money_market, omnipool_router)
+
+def test_hollar_borrowers():
+    from hydradx.model.indexer_utils import get_current_money_market
+    money_market = get_current_money_market()
+    borrowers = money_market.cdps
+    print("borrower count:", len(borrowers))
+    print("total HOLLAR debt:", sum([borrower.debt['HOLLAR'] for borrower in borrowers if 'HOLLAR' in borrower.debt]))
+    pass

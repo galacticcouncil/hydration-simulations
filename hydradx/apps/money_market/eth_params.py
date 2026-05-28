@@ -5,7 +5,9 @@ import numpy as np
 from matplotlib import pyplot as plt
 import sys, os, math
 import streamlit as st
-import time
+import time, datetime
+from pathlib import Path
+import re
 
 from streamlit import form_submit_button
 
@@ -17,11 +19,15 @@ from hydradx.model.amm.omnipool_router import OmnipoolRouter
 from hydradx.model.amm.money_market import MoneyMarket, MoneyMarketAsset, CDP
 from hydradx.model.amm.stableswap_amm import StableSwapPoolState
 from hydradx.model.amm.trade_strategies import liquidate_cdps, schedule_swaps, omnipool_arbitrage, sell_all
-from hydradx.model.processing import get_current_money_market, save_money_market, load_money_market as load_money_market_from_file
+from hydradx.model.processing import save_money_market, load_money_market as load_money_market_from_file, \
+     save_state, load_state
 from hydradx.model.amm.agents import Agent
 from hydradx.model.indexer_utils import get_current_omnipool_router, get_current_block_height
-from hydradx.apps.display_utils import get_distribution, one_line_markdown, bell_distribute
+from hydradx.apps.display_utils import get_distribution, one_line_markdown
 from hydradx.model.amm.fixed_price import FixedPriceExchange
+from hydradx.model.indexer_utils import get_current_money_market
+from hydradx.apps.s3_utils import list_s3_keys, download_file_from_s3
+from hydradx.apps.s3_utils import upload_file_to_s3
 
 st.markdown("""
     <style>
@@ -47,24 +53,111 @@ st.markdown("""
 st.set_page_config(layout="wide")
 print("App start")
 
+
+def _parse_router_block_from_key(key: str) -> int | None:
+    filename = Path(key).name
+    match = re.search(r"omnipool_router_savefile_(\d+)(?:\.json)?$", filename)
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except ValueError:
+        return None
+
+
+def _select_closest_router_key(keys: list[str], block_number: int) -> str | None:
+    candidates = []
+    for key in keys:
+        parsed = _parse_router_block_from_key(key)
+        if parsed is not None:
+            candidates.append((parsed, key))
+    if not candidates:
+        return None
+    # Prefer the closest block, then the higher block as a tiebreaker.
+    return min(candidates, key=lambda item: (abs(item[0] - block_number), -item[0]))[1]
+
+
 @st.cache_data(ttl=3600, show_spinner="Loading Omnipool data (cached for 1 hour)...")
 def load_omnipool_router() -> tuple[OmnipoolRouter, str]:
-    block_number = get_current_block_height() - 10000
-    # Add timestamp to verify caching
-    import datetime
     cache_time = datetime.datetime.now().strftime("%H:%M:%S")
-    print(f"Cache miss! Loading omnipool at {cache_time}")
-    load_router = get_current_omnipool_router(block_number)
+    load_path = Path(__file__).parent / "archive"
+    load_path.mkdir(parents=True, exist_ok=True)
+    block_number = get_current_block_height() - 1000
+
+    load_router = None
+    selected_block = block_number
+    try:
+        print("[router] Listing S3 keys (omnipool-storage/routers)")
+        keys = list_s3_keys(prefix="routers/omnipool_router_savefile_", bucket="omnipool-storage")
+        if not keys:
+            print("[router] No S3 keys returned from list (omnipool-storage/routers)")
+        key = _select_closest_router_key(keys, block_number) if keys else None
+        if key:
+            print(f"[router] Selected S3 key: {key}")
+            dest = load_path / Path(key).name
+            print(f"[router] Downloading S3 key: {key}")
+            if download_file_from_s3(key, dest, bucket="omnipool-storage"):
+                print(f"[router] Downloaded S3 key to: {dest}")
+                load_router = load_state(path=load_path, filename=dest.name)
+                parsed_block = _parse_router_block_from_key(key)
+                if parsed_block is not None:
+                    selected_block = parsed_block
+            else:
+                print(f"[router] Failed to download S3 key: {key}")
+        else:
+            # Some buckets disallow ListObjects; try direct get by block.
+            for candidate in (
+                f"routers/omnipool_router_savefile_{block_number}",
+                f"routers/omnipool_router_savefile_{block_number}.json",
+                "routers/omnipool_router_savefile_0",
+                "routers/omnipool_router_savefile_0.json",
+            ):
+                print(f"[router] Trying S3 key: {candidate}")
+                dest = load_path / Path(candidate).name
+                if download_file_from_s3(candidate, dest, bucket="omnipool-storage"):
+                    print(f"[router] Downloaded S3 key to: {dest}")
+                    load_router = load_state(path=load_path, filename=dest.name)
+                    selected_block = 0 if candidate.endswith("_0") or candidate.endswith("_0.json") else block_number
+                    break
+                print(f"[router] Failed to download S3 key: {candidate}")
+    except Exception as exc:
+        print(f"[router] S3 router load failed: {exc}")
+        load_router = None
+
+    if load_router is None:
+        try:
+            print(f"[router] Falling back to local cache in: {load_path}")
+            load_router = load_state(path=load_path)
+        except Exception:
+            load_router = None
+
+    if load_router is None:
+        # Add timestamp to verify caching
+        print(f"Cache miss! Loading omnipool at {cache_time}")
+        load_router = get_current_omnipool_router(block_number)
+        selected_block = block_number
+
+    save_filename = f"omnipool_router_savefile_{selected_block}"
+    try:
+        save_state(load_router, path=load_path, filename=save_filename)
+        upload_file_to_s3(load_path / save_filename, f"routers/{save_filename}", bucket="omnipool-storage")
+        print(f"[router] Uploaded S3 key: routers/{save_filename}")
+    except Exception:
+        pass
+
     load_omnipool = load_router.exchanges['omnipool']
-    if block_number is None:
-        block_number = load_omnipool.time_step
+
+    # if block_number is None:
+    block_number = load_omnipool.time_step
     stableswap_pools = [
         pool for pool in load_router.exchanges.values()
         if isinstance(pool, StableSwapPoolState)
         and min(pool.liquidity.values()) > 0
     ]
+
+    pass
     usd_price_lrna = (
-        1 / load_omnipool.lrna_price('2-Pool-Stbl') / 1.01  # fudging this because I can't get the stableswap pool shares
+        1 / load_omnipool.lrna_price('HOLLAR')
     )
     load_omnipool.add_token(
         'USD', liquidity = usd_price_lrna * 1000000, lrna=1000000
@@ -73,17 +166,61 @@ def load_omnipool_router() -> tuple[OmnipoolRouter, str]:
     return OmnipoolRouter(exchanges=[load_omnipool, *stableswap_pools], unique_id='router'), cache_time
 
 
+def _parse_mm_block_from_key(key: str) -> int | None:
+    filename = Path(key).name
+    match = re.search(r"money_market_savefile_(\d+)\.json$", filename)
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except ValueError:
+        return None
+
+
+def _select_closest_mm_key(keys: list[str], block_number: int) -> str | None:
+    candidates = []
+    for key in keys:
+        parsed = _parse_mm_block_from_key(key)
+        if parsed is not None:
+            candidates.append((parsed, key))
+    if not candidates:
+        return None
+    # Prefer the closest block, then the higher block as a tiebreaker.
+    return min(candidates, key=lambda item: (abs(item[0] - block_number), -item[0]))[1]
+
+
 def load_money_market(block_number: int) -> MoneyMarket:
     print("Loading money market data...")
+    load_path = Path(__file__).parent / "archive"
+    load_path.mkdir(parents=True, exist_ok=True)
+
+    status_box = st.empty()
+    status_box.info("Checking S3 for money market savefiles...")
+
+    load_mm = None
     try:
-        # if '/' in __file__:
-        #     os.chdir(__file__[:__file__.rfind('/')])
-        print(f"attempting to load money market from: {os.getcwd()}")
-        load_mm = load_money_market_from_file()
-    except FileNotFoundError:
-        print('No local money market save file found - downloading from chain...')
-        load_mm = get_current_money_market()
-        load_mm.time_step = block_number
+        keys = list_s3_keys(prefix="", bucket="money-market-storage")
+        key = _select_closest_mm_key(keys, block_number) if keys else None
+        if key:
+            print(f"Downloading money market savefile from S3: {key}")
+            dest = load_path / Path(key).name
+            if download_file_from_s3(key, dest, bucket="money-market-storage"):
+                status_box.success(f"Loaded money market savefile from S3: {dest.name}")
+                print(f"Loaded money market savefile from S3 into: {dest}")
+                load_mm = load_money_market_from_file(path=load_path, filename=dest.name)
+    except Exception:
+        load_mm = None
+
+    if load_mm is None:
+        try:
+            # if '/' in __file__:
+            #     os.chdir(__file__[:__file__.rfind('/')])
+            print(f"attempting to load money market from: {os.getcwd()}")
+            load_mm = load_money_market_from_file(path=load_path)
+        except FileNotFoundError:
+            print('No local money market save file found - downloading from chain...')
+            load_mm = get_current_money_market()
+            load_mm.time_step = block_number
 
     if load_mm is None:
         print('Money market could not be loaded - check internet connection.')
@@ -98,6 +235,7 @@ def load_money_market(block_number: int) -> MoneyMarket:
         pass
 
     print("Finished downloading money_market data.")
+    status_box.empty()
     return load_mm
 
 
@@ -212,7 +350,7 @@ def rebuild_money_market():
                 new_cdp.collateral[tkn] *= old_prices[tkn] / new_mm.assets[tkn].price
             if tkn in new_cdp.debt:
                 new_cdp.debt[tkn] *= old_prices[tkn] / new_mm.assets[tkn].price
-        if st.session_state.include_original_cdps and new_mm.get_health_factor(cdp) >= 1:
+        if st.session_state.include_original_cdps and new_mm.get_health_factor(new_cdp) >= 1:
             new_mm.add_cdp(new_cdp)
 
     new_mm.add_cdps(distribute_cdps(
@@ -306,12 +444,12 @@ for exchange in initial_stableswaps:
                 start_price[tkn] = exchange.price(tkn, start_price[priced_tokens[0]]) * start_price[priced_tokens[0]]
 
 st.session_state.setdefault("time_steps", 20)
-st.session_state.setdefault("include_original_cdps", True)
+st.session_state.setdefault("include_original_cdps", False)
 st.session_state.setdefault("resolution", 20)
-st.session_state.setdefault("add_collateral", {"HDX": 1_000_000})
+st.session_state.setdefault("add_collateral", {"2-Pool-HUSDe": 1_000_000})
 st.session_state.setdefault("add_debt", {"USDT": 600_000})
 st.session_state.setdefault("price_change", {
-    "HDX": -20
+    '2-Pool-HUSDe': -20
 })
 st.session_state.setdefault("number_of_cdps", 20)
 st.session_state.setdefault("assets", [asset.copy() for asset in initial_mm.assets.values()])
@@ -322,6 +460,8 @@ st.session_state["money_market"] = rebuild_money_market()
 st.session_state.setdefault("asset_changed", False)
 st.session_state["refresh_graphs"] = True
 st.session_state["run_simulation"] = False
+st.session_state["toxic_debt_view"] = False
+st.session_state["toxic_debt_breakdown"] = False
 
 with st.sidebar:
     def sidebar_builder():
@@ -340,7 +480,7 @@ with st.sidebar:
         def change_param_form(
                 key: str,
                 title: str,
-                tokens: list[str] or Callable,
+                tokens: list[str] | Callable,
                 default_value: float,
                 default_token: str,
                 min_value: float,
@@ -567,7 +707,7 @@ with st.sidebar:
             key="add_collateral",
             title="Add collateral",
             tokens=st.session_state["money_market"].asset_list,
-            default_token="HDX",
+            default_token='2-Pool-HUSDe',
             default_value=1_000_000,
             min_value=-1_000_000_000,
             max_value=1_000_000_000,
@@ -610,6 +750,7 @@ with st.sidebar:
             st.session_state["asset_changed"] = False
 
     sidebar_builder()
+
 
 
 @st.fragment
@@ -698,6 +839,8 @@ def run_app():
             if price_tkn == "HDX":
                 # there is no external market for HDX, so we set the price in the money market to the omnipool price
                 price_paths[price_tkn][state.time_step] = state.pools['router'].exchanges['omnipool'].usd_price('HDX')
+            elif price_tkn == '2-Pool-HUSDe':
+                pass
             for pool in relevant_pools:
                 if isinstance(pool, FixedPriceExchange):
                     pool.prices[price_tkn] = price_paths[price_tkn][state.time_step]
@@ -769,7 +912,7 @@ def run_app():
                 )
             )
         },
-        evolve_function=update_prices,
+        update_function=update_prices,
         external_market=start_price
     )
 
@@ -874,7 +1017,7 @@ def run_app():
     plot_agent_holdings('liquidator')
     # plot_agent_holdings('arbitrageur')
 
-    @st.fragment
+    # @st.fragment
     def plot_toxic_debt():
         with (st.expander(f"Toxic debt")):
             st.radio(
@@ -945,8 +1088,7 @@ def run_app():
                             debt[i] * (
                                 event.pools['money_market'].assets[tkn].price
                                 if tkn in st.session_state["money_market"].asset_list else 1
-                            )
-                            for i, event in enumerate(events)
+                            ) for i, event in enumerate(events)
                         ], label=f"{tkn}" if st.session_state.toxic_debt_breakdown else None
                     )
                     ax.set_title("Toxic debt in USD")

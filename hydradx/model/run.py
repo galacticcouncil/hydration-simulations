@@ -20,7 +20,7 @@ def run(initial_state: GlobalState, time_steps: int, silent: bool = False) -> li
     for i in range(time_steps):
 
         # market evolutions
-        new_global_state.evolve()
+        new_global_state.update()
 
         events.append(new_global_state.archive())
 

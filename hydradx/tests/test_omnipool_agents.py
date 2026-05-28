@@ -164,7 +164,7 @@ def test_omnipool_arbitrager_periodic(frequency: int):
         price_list.append(prices)
 
     initial_state = GlobalState(pools={'omnipool': omnipool}, agents={'agent': agent}, external_market=external_market,
-                        evolve_function=historical_prices(price_list))
+                                update_function=historical_prices(price_list))
     events = [initial_state] + run(initial_state, time_steps=timesteps, silent=True)
 
     for i, event in enumerate(events):
@@ -315,7 +315,7 @@ def test_schedule_swaps():
     strat = schedule_swaps('omnipool', trades)
     expected_usd = omnipool.calculate_buy_from_sell(tkn_buy='USD', tkn_sell='HDX', sell_quantity=100)
     strat.execute(state, 'agent')
-    state.evolve()
+    state.update()
     expected_dot = -omnipool.calculate_sell_from_buy(tkn_buy='HDX', tkn_sell='DOT', buy_quantity=150)
     strat.execute(state, 'agent')
     expected_hdx = 50
