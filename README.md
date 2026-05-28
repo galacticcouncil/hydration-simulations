@@ -50,6 +50,7 @@ from hydradx.model.amm.global_state import GlobalState, fluctuate_prices
 from hydradx.model.run import run
 from pytest import approx
 
+<code>
 state = GlobalState(
     agents=[
         Agent(
@@ -84,3 +85,4 @@ omnipool = final_state.pools['omnipool']
 assert agent1.get_holdings('HDX') > agent1.get_initial_holdings('HDX')
 # price of HDX in omnipool should be consistent with external market
 assert omnipool.price('HDX', 'USD') == approx(final_state.price('HDX'), rel=1e-8)
+</code>
