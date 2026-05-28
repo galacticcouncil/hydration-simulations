@@ -904,7 +904,6 @@ def test_fuzz_arbitrary_peg_remove_uniform(peg1, peg2, r1, r2):
     st.floats(min_value=0.000001, max_value = 1000000),
     st.floats(min_value=0.000001, max_value = 1000000)
 )
-@reproduce_failure('6.155.0', b'AXicY2DQsH/AAAYa9hsgDCdGTg37D1BBR3XhHIgsTATGAADtZge/')
 def test_fuzz_exploit_loop(add_tkn_usdt, remove_tkn_usdt, trade_pct_size, add_pct_size, amp, peg1, peg2, r1, r2):
     fee = 0.0
     tvl = 2000000
