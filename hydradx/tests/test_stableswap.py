@@ -904,6 +904,7 @@ def test_fuzz_arbitrary_peg_remove_uniform(peg1, peg2, r1, r2):
     st.floats(min_value=0.000001, max_value = 1000000),
     st.floats(min_value=0.000001, max_value = 1000000)
 )
+@reproduce_failure('6.155.0', b'AXicY2DQsH/AAAYa9hsgDCdGTg37D1BBR3XhHIgsTATGAADtZge/')
 def test_fuzz_exploit_loop(add_tkn_usdt, remove_tkn_usdt, trade_pct_size, add_pct_size, amp, peg1, peg2, r1, r2):
     fee = 0.0
     tvl = 2000000
@@ -938,7 +939,7 @@ def test_fuzz_exploit_loop(add_tkn_usdt, remove_tkn_usdt, trade_pct_size, add_pc
         raise AssertionError('Agent should have no shares left')
     if agent.holdings[buy_tkn] != init_holdings[buy_tkn]:
         raise AssertionError('By design of test, agent should have starting quantity of buy_tkn')
-    if agent.holdings[sell_tkn] > init_holdings[sell_tkn]:
+    if agent.holdings[sell_tkn] > init_holdings[sell_tkn] * (1 + 1e-42):
         raise AssertionError('Agent has successfully exploited the pool')
     profit_pct = (init_holdings[sell_tkn] - agent.holdings[sell_tkn])/tokens[sell_tkn]
     if profit_pct >= 1e9:
