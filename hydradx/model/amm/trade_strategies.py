@@ -153,8 +153,10 @@ def back_and_forth(
     return TradeStrategy(strategy, name=f'back and forth (${percentage})')
 
 
-def invest_all(pool_id: str, assets: list or str = None, when: int = 0) -> TradeStrategy:
-
+def invest_all(pool_id: str, assets: list | str = None, when: int = None) -> TradeStrategy:
+    """
+    if when is not specified, the strategy will try to invest all assets at every time step. If when is specified, it will only try to invest at that time step.
+    """
     if assets and not isinstance(assets, list):
         assets = [assets]
 
@@ -164,21 +166,21 @@ def invest_all(pool_id: str, assets: list or str = None, when: int = 0) -> Trade
             self.done = False
 
         def execute(self, state: GlobalState, agent_id: str):
-            if state.time_step < self.when:
-                return state
+            if self.when is not None:
+                if state.time_step != self.when:
+                    return state
             agent: Agent = state.agents[agent_id]
             pool = state.pools[pool_id]
 
             for asset in assets or list(agent.holdings.keys()):
                 if agent.holdings[asset] == 0:
                     continue
-                if asset in state.pools[pool_id].asset_list:
+                if asset in state.pools[pool_id].liquidity:
                     pool.add_liquidity(
                         agent=agent,
                         quantity=agent.holdings[asset],
                         tkn_add=asset
                     )
-
             return state
 
     return TradeStrategy(Strategy(when).execute, name=f'invest all ({pool_id})')
@@ -190,7 +192,8 @@ def withdraw_all(when: int) -> TradeStrategy:
         if state.time_step == when:
             agent = state.agents[agent_id]
             new_state = state
-            for key in agent.holdings.keys():
+            holding_keys = list(agent.holdings.keys())
+            for key in holding_keys:
                 # shares.keys might just be the pool name, or it might be a tuple (pool, token)
                 if isinstance(key, tuple):
                     pool_id = key[0]
