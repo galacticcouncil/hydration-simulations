@@ -107,7 +107,7 @@ class PropellerM2:
                  deploy_tranche=5_000.0,
                  unwind_tranche=5_000.0,
                  pokes_per_step=None,       # keeper pokes per step (None = every block)
-                 harvest_threshold=0.005,   # skim once surplus > 0.5% of basis
+                 harvest_threshold=0.001,   # skim once surplus > 0.1% of basis (SubLoop.sol:157 default)
                  slippage_band=0.01,
                  f1_fixed=False,            # True: harvest reserves accrued Main interest
                  ltv=ETH_LTV):

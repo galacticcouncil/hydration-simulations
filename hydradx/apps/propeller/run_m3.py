@@ -94,8 +94,30 @@ def s3_exit_latency():
         print(f"S3 arb capacity {label:>9}: settled {done}/5; per-request {times}")
 
 
+def s4_crash_rebalance_vs_queue():
+    """Collateral −40% + permissionless rebalance() while 5 redemptions are queued:
+    the vault's deleverTarget settles AHEAD of the queue (CollateralVault.sol:334).
+    Compare queue settle times with vs without the rebalance call."""
+    for do_rebalance in (False, True):
+        w = setup(n_depositors=10, each=500_000)
+        for _ in range(7 * H):
+            w.step(600)
+        reqs = [w.request_redeem(f'u{i}') for i in range(5)]
+        w.step(600)
+        if do_rebalance:
+            repay = w.crash_and_rebalance(0.40)
+        for _ in range(30 * 24):
+            w.step(600)
+            if all(r['done'] for r in reqs):
+                break
+        times = [f"{(r['done_block']-r['requested_block'])/BLOCKS_PER_DAY:.2f}d" if r['done_block'] else 'NEVER' for r in reqs]
+        label = f"crash+rebalance (deleverTarget ${repay:,.0f})" if do_rebalance else "no rebalance (control)"
+        print(f"S4 {label}: settle times {times}, residual deleverTarget ${w.vault_delever_target:,.0f}")
+
+
 if __name__ == '__main__':
     s1_stress_run(reverts=False)
     s1_stress_run(reverts=True)
     s2_churn_attack()
     s3_exit_latency()
+    s4_crash_rebalance_vs_queue()

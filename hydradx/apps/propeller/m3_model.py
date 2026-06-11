@@ -40,6 +40,9 @@ class M3World(PropellerM2):
         self._arb_budget = 0.0
         self.shares = {}          # depositor -> vault shares
         self.total_shares = 0.0
+        self.collateral_price_mult = 1.0   # collateral price factor (1.0 = entry price)
+        self.vault_delever_target = 0.0    # Main debt to repay from a down-rebalance
+                                           # (settles AHEAD of the redemption queue)
         self.fee_pot = 0.0        # fees retained (accrue to remaining holders via collateral)
         self.queue = []           # FIFO: dicts(owner, shares, coll_owed, debt_share, repaid, coll_settled)
 
@@ -85,11 +88,38 @@ class M3World(PropellerM2):
         self.queue.append(req)
         return req
 
+    def crash_and_rebalance(self, drop: float):
+        """Collateral price falls by `drop`; permissionless rebalance() fires
+        (CollateralVault.sol:481-496): unwind the loop slice worth the excess
+        debt; its freed HOLLAR repays Main debt AHEAD of the redemption queue."""
+        self.collateral_price_mult *= (1 - drop)
+        self.collateral_usd *= (1 - drop)
+        max_ltv = 0.75
+        if self.collateral_usd <= 0:
+            return 0.0
+        ltv = self.main_debt / self.collateral_usd
+        if ltv <= max_ltv + 0.03:   # +300bp hysteresis band
+            return 0.0
+        repay = self.main_debt - self.collateral_usd * max_ltv
+        equity = max(self.loop_collateral_usd() - self.loop_debt, 0.0)
+        slice_eq = min(repay, equity)
+        self.unwind_target += slice_eq
+        self.principal_equity = max(self.principal_equity - slice_eq, 0.0)
+        self.vault_delever_target += repay
+        return repay
+
     def poke_settle(self):
-        """FIFO settlement from freed HOLLAR (+ interest reserve when F1-fixed)."""
+        """Settlement from freed HOLLAR: down-rebalance deleverTarget FIRST
+        (CollateralVault.sol:334-348), then the FIFO queue."""
         available = self.freed
         if self.f1_fixed and self.interest_reserve > 0:
             available += self.interest_reserve
+        if self.vault_delever_target > 0 and available > 0:
+            r = min(available, self.vault_delever_target)
+            available -= r
+            self.vault_delever_target -= r
+            self.main_debt -= r
+            self.synth = self.main_debt / 0.98 * 1.005
         for req in self.queue:
             if req['done'] or available <= 0:
                 continue

@@ -1,0 +1,21 @@
+S1 baseline 1y [as-implemented]:
+  backing gap: day30 $13,003  day180 $81,714  day365 $159,747
+  compounded yield $594,373 (11.89% of deposit)
+  redemption: collateral released 95.64%  STUCK 4.36%  (≈ $243,709 of user value)
+S1 baseline 1y [F1-fixed]:
+  backing gap: day30 $-29,257  day180 $-28,718  day365 $-35,421
+  compounded yield $570,216 (11.40% of deposit)
+  redemption: collateral released 100.00%  STUCK 0.00%  (≈ $0 of user value)
+S2 HOLLAR 7.0% (spread −0.66%): after 180d inverted — gap $125,135 (3.21% of Main debt), HF 1.050, liqs 0
+S2 HOLLAR 10% (spread −3.66%): after 180d inverted — gap $459,824 (11.63% of Main debt), HF 1.050, liqs 0
+S3 1%/day to 5%  : liqs   0  liq-loss $        0  equity Δ $ -1,035,704  final HF 1.050  gap $1,047,160
+S3 5% over 12h   : liqs   0  liq-loss $        0  equity Δ $ -1,018,050  final HF 1.050  gap $1,027,470
+S3 5% over 2h    : liqs   0  liq-loss $        0  equity Δ $ -1,020,810  final HF 1.050  gap $1,030,060
+S3 5% instant    : liqs   1  liq-loss $  677,913  equity Δ $ -1,833,506  final HF 1.050  gap $1,842,700
+S3 8% over 12h   : liqs   0  liq-loss $        0  equity Δ $ -1,508,851  final HF 1.050  gap $1,518,289
+S3 8% instant    : liqs   2  liq-loss $1,016,870  equity Δ $ -2,865,850  final HF 1.050  gap $2,875,082
+S3 12% over 24h  : liqs   0  liq-loss $        0  equity Δ $ -2,046,232  final HF 1.050  gap $2,055,878
+S4 rate 4.4%: synth floor breaks after 42d keeper outage; at outage+30d Main liquidates if collateral falls 99.7%
+S4 rate 10%: synth floor breaks after 19d keeper outage; at outage+30d Main liquidates if collateral falls 99.2%
+S4 rate 20%: synth floor breaks after 10d keeper outage; at outage+30d Main liquidates if collateral falls 98.5%
+S5 exit during 3% PRIME discount: released 82.08% of deposit, stuck 17.92%, liqs 0, gap $654,514

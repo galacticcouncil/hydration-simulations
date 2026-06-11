@@ -1,0 +1,25 @@
+S1 run, discount persists:
+   queue pos 0: realized $500,000 / $500k  stuck $0  settled in 0.04d
+   queue pos 2: realized $431,457 / $500k  stuck $0  settled in 0.08d
+   queue pos 4: realized $341,869 / $500k  stuck $0  settled in 0.08d
+   queue pos 6: realized $288,175 / $500k  stuck $0  settled in 0.12d
+   queue pos 9: realized $0 / $500k  stuck $226,174  settled in NEVER
+   first-vs-last gap: 100.00pp of deposit
+S1 run, discount reverts at d14:
+   queue pos 0: realized $500,000 / $500k  stuck $0  settled in 0.04d
+   queue pos 2: realized $431,457 / $500k  stuck $0  settled in 0.08d
+   queue pos 4: realized $341,869 / $500k  stuck $0  settled in 0.08d
+   queue pos 6: realized $288,175 / $500k  stuck $0  settled in 0.12d
+   queue pos 9: realized $0 / $500k  stuck $226,174  settled in NEVER
+   first-vs-last gap: 100.00pp of deposit
+S2 fee  0bp: 10 cycles — holders +$12,611, attacker cost $69,827 (1.40% per cycle notional)
+S2 fee 10bp: 10 cycles — holders +$22,136, attacker cost $76,002 (1.52% per cycle notional)
+S2 fee 20bp: 10 cycles — holders +$33,538, attacker cost $89,254 (1.79% per cycle notional)
+S2 fee 30bp: 10 cycles — holders +$42,204, attacker cost $96,637 (1.93% per cycle notional)
+S2 fee 50bp: 10 cycles — holders +$56,931, attacker cost $114,833 (2.30% per cycle notional)
+S3 arb capacity unlimited: settled 4/5; per-request ['0.04d', '0.08d', '0.12d', '0.17d', 'NEVER']
+S3 arb capacity   $500k/h: settled 4/5; per-request ['0.04d', '0.08d', '0.12d', '0.17d', 'NEVER']
+S3 arb capacity   $100k/h: settled 4/5; per-request ['0.88d', '1.79d', '2.75d', '3.71d', 'NEVER']
+S3 arb capacity    $25k/h: settled 4/5; per-request ['0.21d', '1.12d', '2.04d', '2.96d', 'NEVER']
+S4 no rebalance (control): settle times ['0.04d', '0.08d', '0.12d', '0.17d', 'NEVER'], residual deleverTarget $0
+S4 crash+rebalance (deleverTarget $1,309,615): settle times ['0.04d', '0.21d', '0.25d', '0.25d', 'NEVER'], residual deleverTarget $0
